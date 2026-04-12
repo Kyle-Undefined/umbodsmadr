@@ -1,0 +1,7 @@
+dist/
+node_modules/
+.DS_Store
+.umbod/
+umbod.*.db
+*.db-shm
+*.db-wal

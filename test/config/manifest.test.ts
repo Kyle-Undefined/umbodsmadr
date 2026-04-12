@@ -1,0 +1,271 @@
+import { describe, expect, test, beforeEach, afterEach } from 'bun:test';
+import { loadManifest } from '../../src/config/manifest.ts';
+import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+
+let tempDir: string;
+
+beforeEach(() => {
+	tempDir = mkdtempSync(join(tmpdir(), 'umbod-test-'));
+});
+
+afterEach(() => {
+	rmSync(tempDir, { recursive: true, force: true });
+});
+
+function writeToml(content: string): string {
+	const filePath = join(tempDir, 'umbod.toml');
+	writeFileSync(filePath, content);
+	return filePath;
+}
+
+// ── Valid manifests ──────────────────────────────────────────
+
+describe('loadManifest > valid', () => {
+	test('minimal manifest', async () => {
+		const path = writeToml(`
+[env]
+name = "test"
+version = "1.0.0"
+timeout = 5
+
+[policy]
+default_unknown = "block"
+approval_method = "web"
+`);
+
+		const manifest = await loadManifest(path);
+		expect(manifest.env.name).toBe('test');
+		expect(manifest.env.version).toBe('1.0.0');
+		expect(manifest.policy.default_unknown).toBe('block');
+		expect(manifest.policy.approval_method).toBe('web');
+		expect(manifest.rules).toEqual({});
+		expect(manifest.server.host).toBe('127.0.0.1');
+		expect(manifest.server.port).toBe(9090);
+	});
+
+	test('full manifest with rules and server', async () => {
+		const path = writeToml(`
+[env]
+name = "production"
+version = "2.0.0"
+timeout = 5
+
+[policy]
+default_unknown = "approve"
+approval_method = "both"
+
+[server]
+host = "0.0.0.0"
+port = 8080
+
+[rules]
+"git status" = "allow"
+"rm *" = "approve"
+"/^curl/" = "block"
+`);
+
+		const manifest = await loadManifest(path);
+		expect(manifest.env.name).toBe('production');
+		expect(manifest.policy.default_unknown).toBe('approve');
+		expect(manifest.policy.approval_method).toBe('both');
+		expect(manifest.server.host).toBe('0.0.0.0');
+		expect(manifest.server.port).toBe(8080);
+		expect(manifest.rules['git status']).toBe('allow');
+		expect(manifest.rules['rm *']).toBe('approve');
+		expect(manifest.rules['/^curl/']).toBe('block');
+	});
+
+	test('all approval methods', async () => {
+		for (const method of ['web', 'cli', 'both'] as const) {
+			const path = writeToml(`
+[env]
+name = "test"
+version = "1.0.0"
+timeout = 5
+
+[policy]
+default_unknown = "block"
+approval_method = "${method}"
+`);
+
+			const manifest = await loadManifest(path);
+			expect(manifest.policy.approval_method).toBe(method);
+		}
+	});
+
+	test('all default_unknown values', async () => {
+		for (const decision of ['allow', 'block', 'approve'] as const) {
+			const path = writeToml(`
+[env]
+name = "test"
+version = "1.0.0"
+timeout = 5
+
+[policy]
+default_unknown = "${decision}"
+approval_method = "web"
+`);
+
+			const manifest = await loadManifest(path);
+			expect(manifest.policy.default_unknown).toBe(decision);
+		}
+	});
+
+	test('server defaults when section omitted', async () => {
+		const path = writeToml(`
+[env]
+name = "test"
+version = "1.0.0"
+timeout = 5
+
+[policy]
+default_unknown = "block"
+approval_method = "web"
+`);
+
+		const manifest = await loadManifest(path);
+		expect(manifest.server.host).toBe('127.0.0.1');
+		expect(manifest.server.port).toBe(9090);
+	});
+
+	test('empty rules section', async () => {
+		const path = writeToml(`
+[env]
+name = "test"
+version = "1.0.0"
+timeout = 5
+
+[policy]
+default_unknown = "block"
+approval_method = "web"
+
+[rules]
+`);
+
+		const manifest = await loadManifest(path);
+		expect(manifest.rules).toEqual({});
+	});
+});
+
+// ── Invalid manifests ────────────────────────────────────────
+
+describe('loadManifest > invalid', () => {
+	test('missing env.name', async () => {
+		const path = writeToml(`
+[env]
+version = "1.0.0"
+
+[policy]
+default_unknown = "block"
+approval_method = "web"
+`);
+
+		await expect(loadManifest(path)).rejects.toThrow('env.name');
+	});
+
+	test('missing env.version', async () => {
+		const path = writeToml(`
+[env]
+name = "test"
+
+[policy]
+default_unknown = "block"
+approval_method = "web"
+`);
+
+		await expect(loadManifest(path)).rejects.toThrow('env.version');
+	});
+
+	test('missing env.timeout', async () => {
+		const path = writeToml(`
+[env]
+name = "test"
+version = "1.0.0"
+
+[policy]
+default_unknown = "block"
+approval_method = "web"
+`);
+
+		await expect(loadManifest(path)).rejects.toThrow('env.timeout');
+	});
+
+	test('invalid default_unknown value', async () => {
+		const path = writeToml(`
+[env]
+name = "test"
+version = "1.0.0"
+timeout = 5
+
+[policy]
+default_unknown = "yolo"
+approval_method = "web"
+`);
+
+		await expect(loadManifest(path)).rejects.toThrow('default_unknown');
+	});
+
+	test('invalid approval_method value', async () => {
+		const path = writeToml(`
+[env]
+name = "test"
+version = "1.0.0"
+timeout = 5
+
+[policy]
+default_unknown = "block"
+approval_method = "slack"
+`);
+
+		await expect(loadManifest(path)).rejects.toThrow('approval_method');
+	});
+
+	test('invalid rule decision value', async () => {
+		const path = writeToml(`
+[env]
+name = "test"
+version = "1.0.0"
+timeout = 5
+
+[policy]
+default_unknown = "block"
+approval_method = "web"
+
+[rules]
+"rm *" = "yeet"
+`);
+
+		await expect(loadManifest(path)).rejects.toThrow('rm *');
+	});
+
+	test('nested rule table rejected', async () => {
+		const path = writeToml(`
+[env]
+name = "test"
+version = "1.0.0"
+timeout = 5
+
+[policy]
+default_unknown = "block"
+approval_method = "web"
+
+[rules]
+[rules.nested]
+"rm *" = "block"
+`);
+
+		await expect(loadManifest(path)).rejects.toThrow('nested');
+	});
+
+	test('nonexistent manifest file', async () => {
+		await expect(loadManifest('/nonexistent/path/umbod.toml')).rejects.toThrow('failed to read');
+	});
+
+	test('invalid TOML syntax', async () => {
+		const path = writeToml('this is not valid toml [[[');
+
+		await expect(loadManifest(path)).rejects.toThrow('failed to parse');
+	});
+});
