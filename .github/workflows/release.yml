@@ -1,0 +1,154 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - '*'
+
+permissions:
+  contents: write
+
+env:
+  BUN_VERSION: '1.3.12'
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Ensure tag commit is on main
+        run: |
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          TAG_COMMIT="$(git rev-parse "${GITHUB_SHA}^{commit}")"
+          if ! git merge-base --is-ancestor "${TAG_COMMIT}" "origin/main"; then
+            echo "Tag ${GITHUB_REF_NAME} is not on origin/main."
+            exit 1
+          fi
+
+      - name: Ensure tag matches package.json version
+        run: |
+          TAG_NAME="${GITHUB_REF_NAME}"
+          PACKAGE_VERSION="$(cat package.json | grep '"version"' | head -1 | awk -F'"' '{print $4}')"
+          if [ "${TAG_NAME}" != "${PACKAGE_VERSION}" ]; then
+            echo "Tag ${TAG_NAME} does not match package.json version ${PACKAGE_VERSION}."
+            exit 1
+          fi
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Type check
+        run: bun run typecheck
+
+      - name: Format check
+        run: bun run format:check
+
+      - name: Lint
+        run: bun run lint
+
+  build-linux:
+    runs-on: ubuntu-latest
+    needs: validate
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build Linux binary
+        run: bun run build
+
+      - name: Upload Linux artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: umbod
+          path: dist/umbod
+
+  build-windows:
+    runs-on: ubuntu-latest
+    needs: validate
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build Windows binary
+        run: bun run build:win
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: umbod.exe
+          path: dist/umbod.exe
+
+  release:
+    runs-on: ubuntu-latest
+    needs: [build-linux, build-windows]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download Linux artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: umbod
+          path: dist/
+
+      - name: Download Windows artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: umbod.exe
+          path: dist/
+
+      - name: Mark binaries executable
+        run: chmod +x dist/umbod
+
+      - name: Generate checksums
+        run: |
+          cd dist
+          sha256sum umbod umbod.exe > umbod-checksums.txt
+
+      - name: Render pinned installers
+        run: |
+          sed -e "s|__UMBOD_RELEASE_REF__|${GITHUB_REF_NAME}|g" \
+              -e "s|__UMBOD_IS_RELEASE__|true|g" \
+              install.sh > dist/install.sh
+          chmod +x dist/install.sh
+          sed -e "s|__UMBOD_RELEASE_REF__|${GITHUB_REF_NAME}|g" \
+              -e "s|__UMBOD_IS_RELEASE__|true|g" \
+              install.ps1 > dist/install.ps1
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            dist/umbod
+            dist/umbod.exe
+            dist/umbod-checksums.txt
+            dist/install.sh
+            dist/install.ps1

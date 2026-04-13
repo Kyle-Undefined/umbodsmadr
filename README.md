@@ -71,7 +71,21 @@ Pending approvals, full audit log, active rules. Outcomes are labeled in theme: 
 
 ## platform
 
-Linux, including WSL.
+Windows, and Linux (including WSL)
+
+## install
+
+Linux:
+
+```bash
+curl -fsSL https://github.com/kyle-undefined/umbodsmadr/releases/latest/download/install.sh | bash
+```
+
+Windows:
+
+```bash
+irm https://github.com/kyle-undefined/umbodsmadr/releases/latest/download/install.ps1 | iex
+```
 
 ## build
 
