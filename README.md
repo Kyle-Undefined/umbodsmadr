@@ -83,7 +83,7 @@ curl -fsSL https://github.com/kyle-undefined/umbodsmadr/releases/latest/download
 
 Windows:
 
-```bash
+```powershell
 irm https://github.com/kyle-undefined/umbodsmadr/releases/latest/download/install.ps1 | iex
 ```
 
