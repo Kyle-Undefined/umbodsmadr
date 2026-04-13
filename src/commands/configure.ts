@@ -64,7 +64,7 @@ export async function runConfigureCommand(options: ConfigureOptions): Promise<vo
 			ensureDir(path.dirname(outputPath));
 			await Bun.write(outputPath, asset.contents);
 
-			if (asset.executable) {
+			if (asset.executable && process.platform !== 'win32') {
 				chmodSync(outputPath, 0o755);
 			}
 

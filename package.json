@@ -1,6 +1,6 @@
 {
 	"name": "umbodsmadr",
-	"version": "0.0.1",
+	"version": "0.0.2",
 	"private": true,
 	"type": "module",
 	"description": "The arbiter of policy within the autonomous realm.",
@@ -13,6 +13,7 @@
 		"test": "bun test",
 		"typecheck": "tsc --noEmit",
 		"build": "bun build ./src/cli.ts --compile --outfile dist/umbod",
+		"build:win": "bun build ./src/cli.ts --compile --target=bun-windows-x64 --outfile dist/umbod.exe",
 		"format": "oxfmt --write .",
 		"format:check": "oxfmt --check .",
 		"lint": "oxlint",

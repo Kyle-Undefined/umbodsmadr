@@ -217,10 +217,10 @@ function handleHook(
 			}
 
 			const body = {
+				permissionDecision: toPermissionDecision(finalDecision),
+				permissionDecisionReason: result.reason,
 				hookSpecificOutput: {
 					hookEventName: adapter.hookEvent,
-					permissionDecision: toPermissionDecision(finalDecision),
-					permissionDecisionReason: result.reason,
 				},
 			};
 

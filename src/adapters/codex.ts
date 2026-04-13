@@ -2,7 +2,7 @@ import { homedir } from 'node:os';
 import path from 'node:path';
 
 import type { HookAdapter } from './base.ts';
-import { buildCurlWrapperScript, normalizePayload } from '../hooks/adapter-utils.ts';
+import { buildCurlWrapperScript, buildPowerShellWrapperScript, normalizePayload } from '../hooks/adapter-utils.ts';
 
 export const codexAdapter: HookAdapter = {
 	id: 'codex',
@@ -19,14 +19,21 @@ export const codexAdapter: HookAdapter = {
 		});
 	},
 	install(options) {
-		const scriptPath = path.join(options.outputDir, 'hook-codex.sh');
+		const isWindows = process.platform === 'win32';
+		const scriptFile = isWindows ? 'hook-codex.ps1' : 'hook-codex.sh';
+		const scriptPath = path.join(options.outputDir, scriptFile);
+		const command = isWindows
+			? `powershell.exe -NonInteractive -ExecutionPolicy Bypass -File "${scriptPath}"`
+			: scriptPath;
 
 		return {
 			assets: [
 				{
-					relativePath: 'hook-codex.sh',
-					contents: buildCurlWrapperScript(options.url, 'codex'),
-					executable: true,
+					relativePath: scriptFile,
+					contents: isWindows
+						? buildPowerShellWrapperScript(options.url, 'codex')
+						: buildCurlWrapperScript(options.url, 'codex'),
+					executable: !isWindows,
 				},
 			],
 			config: {
@@ -40,7 +47,7 @@ export const codexAdapter: HookAdapter = {
 								hooks: [
 									{
 										type: 'command',
-										command: scriptPath,
+										command,
 									},
 								],
 							},

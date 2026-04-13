@@ -178,6 +178,71 @@ exit 2
 	);
 }
 
+function psQuote(value: string): string {
+	return `'${value.replaceAll("'", "''")}'`;
+}
+
+function buildPsPreamble(url: string, agent: string): string {
+	return `$body = [Console]::In.ReadToEnd()
+try {
+    $r = Invoke-WebRequest -Method POST -Uri ${psQuote(url)} \`
+        -Headers @{ 'content-type' = 'application/json'; 'x-umbod-agent' = ${psQuote(agent)} } \`
+        -Body $body -UseBasicParsing -TimeoutSec 5
+    if ($r.StatusCode -ge 200 -and $r.StatusCode -lt 300) {
+        $json = $r.Content | ConvertFrom-Json
+`;
+}
+
+export function buildPowerShellWrapperScript(
+	serverUrl: string,
+	agent: string,
+	hookTarget: CurlWrapperHookTarget = 'generic'
+): string {
+	const url = normalizeServerUrl(serverUrl) + '/api/hooks';
+	const preamble = buildPsPreamble(url, agent);
+
+	if (hookTarget === 'cursor') {
+		return (
+			preamble +
+			`        if ($json.permissionDecision -eq 'allow') {
+            Write-Output '{"permission":"allow"}'
+            exit 0
+        }
+    }
+} catch {}
+Write-Output '{"permission":"deny","user_message":"Blocked by umbod policy.","agent_message":"This tool call was denied by the umbod policy engine. See the umbod dashboard for the matched rule and reason."}'
+exit 2
+`
+		);
+	}
+
+	if (hookTarget === 'gemini') {
+		return (
+			preamble +
+			`        if ($json.permissionDecision -eq 'allow') {
+            Write-Output '{"decision":"allow","suppressOutput":true}'
+            exit 0
+        }
+        Write-Output '{"decision":"deny","reason":"Blocked by umbod policy. See the umbod dashboard for the matched rule and reason.","suppressOutput":true}'
+        exit 0
+    }
+} catch {}
+[Console]::Error.WriteLine('umbod hook request failed.')
+exit 2
+`
+		);
+	}
+
+	return (
+		preamble +
+		`        if ($json.permissionDecision -eq 'allow') { exit 0 }
+    }
+} catch {}
+exit 2
+`
+	);
+}
+
 export type PermissionDecision = 'allow' | 'deny';
 
 export function toPermissionDecision(decision: ApprovalDecision): PermissionDecision {

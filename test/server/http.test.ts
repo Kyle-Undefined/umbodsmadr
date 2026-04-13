@@ -128,7 +128,7 @@ describe('HTTP > POST /api/hooks', () => {
 
 		expect(res.status).toBe(200);
 		const body = await res.json();
-		expect(body.hookSpecificOutput.permissionDecision).toBe('allow');
+		expect(body.permissionDecision).toBe('allow');
 		expect(body.hookSpecificOutput.hookEventName).toBe('PreToolUse');
 	});
 
@@ -148,7 +148,7 @@ describe('HTTP > POST /api/hooks', () => {
 
 		expect(res.status).toBe(200);
 		const body = await res.json();
-		expect(body.hookSpecificOutput.permissionDecision).toBe('deny');
+		expect(body.permissionDecision).toBe('deny');
 	});
 
 	test('missing agent returns 400', async () => {
@@ -186,7 +186,7 @@ describe('HTTP > POST /api/hooks', () => {
 
 		expect(res.status).toBe(200);
 		const body = await res.json();
-		expect(body.hookSpecificOutput.permissionDecision).toBe('allow');
+		expect(body.permissionDecision).toBe('allow');
 	});
 });
 
@@ -209,7 +209,7 @@ describe('HTTP > POST /api/hooks approval', () => {
 		// Should eventually return (after timeout) with deny
 		expect(res.status).toBe(200);
 		const body = await res.json();
-		expect(body.hookSpecificOutput.permissionDecision).toBe('deny');
+		expect(body.permissionDecision).toBe('deny');
 	});
 });
 
