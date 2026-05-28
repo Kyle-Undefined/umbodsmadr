@@ -176,14 +176,14 @@ async function resolveApprovalDecision(
 	return waitForApprovalResolution(auditLog, approvalRequestId, timeoutMs);
 }
 
-function handleHook(
+async function handleHook(
 	req: Request,
 	url: URL,
 	options: ServerOptions,
 	sockets: Set<ActivitySocket>,
 	cliApprovalQueue: CliApprovalQueue | null,
 	approvalMethod: string
-): Response | Promise<Response> {
+): Promise<Response> {
 	const agentId = resolveAgentId(req, url);
 
 	if (!agentId) {
@@ -196,44 +196,42 @@ function handleHook(
 		return Response.json({ ok: false, error: `unknown hook adapter "${agentId}"` }, { status: 404 });
 	}
 
-	return req
-		.json()
-		.then(async (payload) => {
-			const call = adapter.normalizePayload(payload);
-			const result = options.evaluate(call);
-			const entry = publishEntry(sockets, options.auditLog, call, result);
-			let finalDecision = result.decision;
+	try {
+		const payload = await req.json();
+		const call = adapter.normalizePayload(payload);
+		const result = options.evaluate(call);
+		const entry = publishEntry(sockets, options.auditLog, call, result);
+		let finalDecision = result.decision;
 
-			if (result.decision === 'approve' && entry.approvalRequestId) {
-				finalDecision = await resolveApprovalDecision(
-					options.auditLog,
-					entry.approvalRequestId,
-					cliApprovalQueue,
-					approvalMethod,
-					call,
-					result.reason,
-					options.approvalTimeoutMs
-				);
-			}
+		if (result.decision === 'approve' && entry.approvalRequestId) {
+			finalDecision = await resolveApprovalDecision(
+				options.auditLog,
+				entry.approvalRequestId,
+				cliApprovalQueue,
+				approvalMethod,
+				call,
+				result.reason,
+				options.approvalTimeoutMs
+			);
+		}
 
-			const body = {
-				permissionDecision: toPermissionDecision(finalDecision),
-				permissionDecisionReason: result.reason,
-				hookSpecificOutput: {
-					hookEventName: adapter.hookEvent,
-				},
-			};
+		const body = {
+			permissionDecision: toPermissionDecision(finalDecision),
+			permissionDecisionReason: result.reason,
+			hookSpecificOutput: {
+				hookEventName: adapter.hookEvent,
+			},
+		};
 
-			// Hooks always respond 200; consumers read permissionDecision from the body.
-			return Response.json(body, { status: 200 });
-		})
-		.catch((error: unknown) => {
-			logger.warn('failed to process hook payload', {
-				agentId,
-				error: errorMessage(error),
-			});
-			return Response.json({ ok: false, error: errorMessage(error) }, { status: 400 });
+		// Hooks always respond 200; consumers read permissionDecision from the body.
+		return Response.json(body, { status: 200 });
+	} catch (error: unknown) {
+		logger.warn('failed to process hook payload', {
+			agentId,
+			error: errorMessage(error),
 		});
+		return Response.json({ ok: false, error: errorMessage(error) }, { status: 400 });
+	}
 }
 
 // ── Server bootstrap ────────────────────────────────────────────

@@ -137,6 +137,14 @@ describe('buildCurlWrapperScript', () => {
 		expect(script).toContain('suppressOutput');
 	});
 
+	test('codex wrapper emits PreToolUse hookSpecificOutput deny JSON', () => {
+		const script = buildCurlWrapperScript('http://127.0.0.1:9090', 'codex', 'codex');
+		expect(script).toContain('"hookSpecificOutput"');
+		expect(script).toContain('"hookEventName":"PreToolUse"');
+		expect(script).toContain('"permissionDecision":"deny"');
+		expect(script).toContain('x-umbod-agent: codex');
+	});
+
 	test('normalizes server URL', () => {
 		const script = buildCurlWrapperScript('http://127.0.0.1:9090/', 'test');
 		// Trailing slash should be stripped in the URL

@@ -105,7 +105,7 @@ export function normalizePayload(agent: string, payload: unknown, options: Norma
 	};
 }
 
-export type CurlWrapperHookTarget = 'cursor' | 'gemini' | 'generic';
+export type CurlWrapperHookTarget = 'codex' | 'cursor' | 'gemini' | 'generic';
 
 function buildCurlPreamble(url: string, agent: string): string {
 	return `#!/usr/bin/env sh
@@ -156,6 +156,27 @@ exit 2
     fi
     printf '%s\\n' '{"decision":"deny","reason":"Blocked by umbod policy. See the umbod dashboard for the matched rule and reason.","suppressOutput":true}'
     exit 0
+    ;;
+esac
+printf '%s\\n' 'umbod hook request failed.' >&2
+cat "$R" >&2
+exit 2
+`
+		);
+	}
+
+	if (hookTarget === 'codex') {
+		return (
+			preamble +
+			`case "$C" in
+  2*)
+    if grep -Eq '"permissionDecision"[[:space:]]*:[[:space:]]*"allow"' "$R"; then
+      exit 0
+    fi
+    if grep -Eq '"permissionDecision"[[:space:]]*:[[:space:]]*"deny"' "$R"; then
+      printf '%s\\n' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Blocked by umbod policy. See the umbod dashboard for the matched rule and reason."}}'
+      exit 0
+    fi
     ;;
 esac
 printf '%s\\n' 'umbod hook request failed.' >&2
@@ -225,6 +246,24 @@ exit 2
         }
         Write-Output '{"decision":"deny","reason":"Blocked by umbod policy. See the umbod dashboard for the matched rule and reason.","suppressOutput":true}'
         exit 0
+    }
+} catch {}
+[Console]::Error.WriteLine('umbod hook request failed.')
+exit 2
+`
+		);
+	}
+
+	if (hookTarget === 'codex') {
+		return (
+			preamble +
+			`        if ($json.permissionDecision -eq 'allow') {
+            exit 0
+        }
+        if ($json.permissionDecision -eq 'deny') {
+            Write-Output '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Blocked by umbod policy. See the umbod dashboard for the matched rule and reason."}}'
+            exit 0
+        }
     }
 } catch {}
 [Console]::Error.WriteLine('umbod hook request failed.')

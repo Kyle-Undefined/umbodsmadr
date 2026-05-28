@@ -73,10 +73,12 @@ describe('claude adapter', () => {
 		const result = claudeAdapter.install({
 			url: 'http://127.0.0.1:9090',
 			outputDir: '/tmp/umbod',
+			timeoutSeconds: 30,
 		});
 		expect(result.assets).toHaveLength(0); // Claude uses HTTP, no wrapper script
+		expect(typeof result.config.contents).toBe('object');
 		expect(result.config.contents).toHaveProperty('hooks');
-		const hooks = result.config.contents.hooks as Record<string, unknown>;
+		const hooks = (result.config.contents as Record<string, unknown>).hooks as Record<string, unknown>;
 		expect(hooks).toHaveProperty('PreToolUse');
 	});
 });
@@ -115,10 +117,12 @@ describe('cursor adapter', () => {
 		const result = cursorAdapter.install({
 			url: 'http://127.0.0.1:9090',
 			outputDir: '/tmp/umbod',
+			timeoutSeconds: 30,
 		});
 		expect(result.assets).toHaveLength(1);
 		expect(result.assets[0].relativePath).toBe('hook-cursor.sh');
 		expect(result.assets[0].executable).toBe(true);
+		expect(typeof result.config.contents).toBe('object');
 		expect(result.config.contents).toHaveProperty('hooks');
 	});
 });
@@ -134,7 +138,7 @@ describe('codex adapter', () => {
 	test('normalizes Codex payload', () => {
 		const call = codexAdapter.normalizePayload({
 			tool_name: 'Bash',
-			arguments: { command: 'cargo build' },
+			tool_input: { command: 'cargo build' },
 			cwd: '/home/user/rust-project',
 		});
 		expect(call.agent).toBe('codex');
@@ -150,14 +154,41 @@ describe('codex adapter', () => {
 		expect(call.tool).toBe('bash');
 	});
 
+	test('normalizes Codex apply_patch as edit', () => {
+		const call = codexAdapter.normalizePayload({
+			hook_event_name: 'PreToolUse',
+			tool_name: 'apply_patch',
+			tool_input: { command: '*** Begin Patch\n*** End Patch' },
+			cwd: '/home/user/project',
+		});
+		expect(call.tool).toBe('edit');
+		expect(call.command).toBe('*** Begin Patch\n*** End Patch');
+		expect(call.workingDirectory).toBe('/home/user/project');
+	});
+
 	test('install generates shell wrapper', () => {
 		const result = codexAdapter.install({
 			url: 'http://127.0.0.1:9090',
 			outputDir: '/tmp/umbod',
+			timeoutSeconds: 30,
 		});
 		expect(result.assets).toHaveLength(1);
 		expect(result.assets[0].relativePath).toBe('hook-codex.sh');
 		expect(result.assets[0].executable).toBe(true);
+		expect(result.config.fileName).toBe('codex.toml');
+		expect(result.config.settingsPath).toContain('.codex/config.toml');
+		expect(result.config.contents).toContain('[[hooks.PreToolUse]]');
+		expect(result.config.contents).toContain('timeout = 30');
+		expect(result.config.contents).toContain('statusMessage = "Checking umbod policy"');
+	});
+
+	test('maps disabled umbod timeout to long Codex hook timeout', () => {
+		const result = codexAdapter.install({
+			url: 'http://127.0.0.1:9090',
+			outputDir: '/tmp/umbod',
+			timeoutSeconds: 0,
+		});
+		expect(result.config.contents).toContain('timeout = 86400');
 	});
 });
 
@@ -216,6 +247,7 @@ describe('gemini adapter', () => {
 		const result = geminiAdapter.install({
 			url: 'http://127.0.0.1:9090',
 			outputDir: '/tmp/umbod',
+			timeoutSeconds: 30,
 		});
 		expect(result.assets).toHaveLength(1);
 		expect(result.assets[0].relativePath).toBe('hook-gemini.sh');
@@ -233,10 +265,11 @@ describe('adapter install', () => {
 			const result = adapter.install({
 				url: 'http://127.0.0.1:9090',
 				outputDir: '/tmp/umbod',
+				timeoutSeconds: 30,
 			});
 			expect(result.config.fileName).toBeDefined();
 			expect(result.config.settingsPath).toBeDefined();
-			expect(typeof result.config.contents).toBe('object');
+			expect(['object', 'string']).toContain(typeof result.config.contents);
 		});
 	}
 });

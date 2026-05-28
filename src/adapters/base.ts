@@ -9,12 +9,13 @@ export interface GeneratedHookAsset {
 export interface HookConfigTarget {
 	fileName: string;
 	settingsPath: string;
-	contents: Record<string, unknown>;
+	contents: Record<string, unknown> | string;
 }
 
 export interface HookInstallOptions {
 	url: string;
 	outputDir: string;
+	timeoutSeconds: number;
 }
 
 export interface HookInstallResult {

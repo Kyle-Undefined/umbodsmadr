@@ -7,33 +7,42 @@ import { DEFAULT_HOST, DEFAULT_PORT } from '../core/types.ts';
 import { logger } from '../utils/logger.ts';
 import { ensureDir, resolveOutputDir } from '../utils/paths.ts';
 
-// Reads umbod.toml from the current directory to infer the server URL.
-// Falls back to the default host/port when no manifest is found.
-function inferServerUrl(options: ConfigureOptions): string {
-	if (options.url) {
-		return options.url.replace(/\/$/, '');
-	}
+interface ConfigureContext {
+	url: string;
+	timeoutSeconds: number;
+}
+
+// Reads umbod.toml from the current directory to infer hook settings.
+// Falls back to the default host/port and no timeout when no manifest is found.
+function inferConfigureContext(options: ConfigureOptions): ConfigureContext {
+	const fallbackUrl = `http://${DEFAULT_HOST}:${DEFAULT_PORT}`;
 
 	try {
 		const manifestPath = path.resolve('umbod.toml');
 		const source = readFileSync(manifestPath, 'utf-8');
 		const parsed = Bun.TOML.parse(source) as Record<string, unknown>;
+		const env = parsed.env as Record<string, unknown> | undefined;
 		const server = parsed.server as Record<string, unknown> | undefined;
 
-		if (server) {
-			const host = typeof server.host === 'string' ? server.host : DEFAULT_HOST;
-			const port = typeof server.port === 'number' ? server.port : DEFAULT_PORT;
-			return `http://${host}:${port}`;
-		}
+		const host = typeof server?.host === 'string' ? server.host : DEFAULT_HOST;
+		const port = typeof server?.port === 'number' ? server.port : DEFAULT_PORT;
+		const timeoutSeconds = typeof env?.timeout === 'number' && env.timeout >= 0 ? env.timeout : 0;
+		return {
+			url: options.url ? options.url.replace(/\/$/, '') : `http://${host}:${port}`,
+			timeoutSeconds,
+		};
 	} catch {
-		// No manifest found or parse error, use default
+		// No manifest found or parse error, use defaults
 	}
 
-	return `http://${DEFAULT_HOST}:${DEFAULT_PORT}`;
+	return {
+		url: options.url ? options.url.replace(/\/$/, '') : fallbackUrl,
+		timeoutSeconds: 0,
+	};
 }
 
 export async function runConfigureCommand(options: ConfigureOptions): Promise<void> {
-	const url = inferServerUrl(options);
+	const { url, timeoutSeconds } = inferConfigureContext(options);
 	const outputDir = resolveOutputDir(options.outputDir);
 	const selected = selectAdapters(options.agent);
 	const writtenAssets = new Set<string>();
@@ -43,7 +52,7 @@ export async function runConfigureCommand(options: ConfigureOptions): Promise<vo
 	}
 
 	for (const adapter of selected) {
-		const result = adapter.install({ url, outputDir });
+		const result = adapter.install({ url, outputDir, timeoutSeconds });
 
 		for (const asset of result.assets) {
 			const outputPath = path.resolve(outputDir, asset.relativePath);
@@ -85,7 +94,7 @@ export async function runConfigureCommand(options: ConfigureOptions): Promise<vo
 		}
 
 		if (!writtenAssets.has(configPath)) {
-			await Bun.write(configPath, JSON.stringify(contents, null, 2) + '\n');
+			await Bun.write(configPath, typeof contents === 'string' ? contents : JSON.stringify(contents, null, 2) + '\n');
 			writtenAssets.add(configPath);
 			logger.info(`wrote ${adapter.displayName} config snippet`, {
 				outputPath: configPath,
