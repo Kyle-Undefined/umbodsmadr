@@ -5,5 +5,5 @@ export default defineConfig({
 	commit: false,
 	tag: false,
 	push: false,
-	files: ['package.json'],
+	files: ['package.json', 'packages/core/package.json', 'packages/cli/package.json'],
 });

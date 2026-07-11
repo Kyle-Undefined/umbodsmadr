@@ -1,11 +1,11 @@
 import { chmodSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 
-import { selectAdapters } from '../adapters/index.ts';
-import type { ConfigureOptions } from '../core/types.ts';
-import { DEFAULT_HOST, DEFAULT_PORT } from '../core/types.ts';
-import { logger } from '../utils/logger.ts';
-import { ensureDir, resolveOutputDir } from '../utils/paths.ts';
+import { selectAdapters } from './adapters/index.ts';
+import type { ConfigureOptions } from './core/types.ts';
+import { DEFAULT_HOST, DEFAULT_PORT } from './core/types.ts';
+import { logger } from './utils/logger.ts';
+import { ensureDir, resolveOutputDir } from './utils/paths.ts';
 
 interface ConfigureContext {
 	url: string;

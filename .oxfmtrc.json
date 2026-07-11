@@ -6,5 +6,5 @@
 	"singleQuote": true,
 	"trailingComma": "es5",
 	"sortPackageJson": false,
-	"ignorePatterns": ["src/server/assets/alpine.js"]
+	"ignorePatterns": ["packages/cli/src/server/assets/alpine.js"]
 }

@@ -98,3 +98,22 @@ bun run typecheck
 bun run test
 bun run build
 ```
+
+## embedding
+
+The repo is a Bun workspace: `packages/core` (`@umbod/core`) holds the policy engine, audit log, hook adapters, and the API handler; `packages/cli` is the `umbod` binary on top of it. If you're building a Bun app and want the engine in-process instead of running the CLI, depend on core and mount it on the port your hooks point at:
+
+```ts
+import { createUmbod, loadManifest } from '@umbod/core';
+
+const manifest = await loadManifest('umbod.toml');
+const umbod = createUmbod({
+	manifest,
+	dbPath: 'umbod.dev.db',
+	onActivity: (entry) => console.log(entry),
+});
+
+Bun.serve({ port: 9090, fetch: (req) => umbod.fetch(req) ?? new Response('not found', { status: 404 }) });
+```
+
+`umbod.fetch` serves the same `/health` and `/api/*` contract as the CLI server (minus the dashboard), so generated hooks work unchanged against either. Approvals surface through `listPendingApprovals()` / `resolveApproval()`, or pass `approvalPrompt` to wire them into your own UI.

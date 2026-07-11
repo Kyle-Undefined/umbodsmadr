@@ -1,14 +1,13 @@
 import { describe, expect, test, beforeAll, afterAll } from 'bun:test';
 import type { Server } from 'bun';
-import { startHttpServer } from '../../src/server/http.ts';
-import { AuditLogStore } from '../../src/db/audit-log.ts';
-import { PolicyEngine } from '../../src/policy/engine.ts';
+import type { AuditLogStore } from '@umbod/core';
+import { startHttpServer } from '../src/server/serve.ts';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { makeManifest } from '../helpers.ts';
+import { makeManifest } from './helpers.ts';
 
-let server: Server<unknown>;
+let server: Server<undefined>;
 let tempDir: string;
 let auditLog: AuditLogStore;
 let baseUrl: string;
@@ -25,20 +24,17 @@ const manifest = makeManifest({
 
 beforeAll(async () => {
 	tempDir = mkdtempSync(join(tmpdir(), 'umbod-http-test-'));
-	auditLog = new AuditLogStore(join(tempDir, 'test.db'));
-	const engine = new PolicyEngine(manifest);
 
-	server = await startHttpServer({
+	const handle = await startHttpServer({
 		host: '127.0.0.1',
 		port: 0, // Let OS pick a free port
 		manifest,
-		auditLog,
+		dbPath: join(tempDir, 'test.db'),
 		approvalTimeoutMs: 500, // Short timeout for tests
-		evaluate(call) {
-			return engine.evaluate(call);
-		},
 	});
 
+	server = handle.server;
+	auditLog = handle.umbod.auditLog;
 	baseUrl = `http://${server.hostname}:${server.port}`;
 });
 

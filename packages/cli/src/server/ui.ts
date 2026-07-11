@@ -1,4 +1,4 @@
-import type { ApprovalRequest, AuditEntry, Manifest } from '../core/types.ts';
+import type { ApprovalRequest, AuditEntry, Manifest } from '@umbod/core';
 
 function escapeHtml(value: string): string {
 	return value

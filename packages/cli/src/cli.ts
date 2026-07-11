@@ -1,9 +1,8 @@
 #!/usr/bin/env bun
 
-import { runConfigureCommand } from './commands/configure.ts';
+import { errorMessage, logger, runConfigureCommand } from '@umbod/core';
+
 import { runStartCommand } from './commands/start.ts';
-import { errorMessage } from './utils/errors.ts';
-import { logger } from './utils/logger.ts';
 
 function readFlag(args: string[], name: string): string | undefined {
 	const index = args.indexOf(name);

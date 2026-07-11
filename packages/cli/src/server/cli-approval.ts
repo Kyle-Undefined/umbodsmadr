@@ -1,6 +1,6 @@
 import * as readline from 'node:readline';
 
-import type { ApprovalDecision, ToolCall } from '../core/types.ts';
+import type { ApprovalDecision, ToolCall } from '@umbod/core';
 
 function formatPrompt(call: ToolCall, reason: string): string {
 	const lines = [

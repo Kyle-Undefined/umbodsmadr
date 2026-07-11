@@ -1,0 +1,16 @@
+{
+	"name": "umbod",
+	"version": "0.0.6",
+	"private": true,
+	"type": "module",
+	"description": "The arbiter of policy within the autonomous realm.",
+	"bin": {
+		"umbod": "./src/cli.ts"
+	},
+	"dependencies": {
+		"@umbod/core": "workspace:*"
+	},
+	"engines": {
+		"bun": ">=1.3.0"
+	}
+}
