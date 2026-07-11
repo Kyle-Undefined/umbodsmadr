@@ -1,4 +1,4 @@
-import type { ApprovalRequest, AuditEntry, Manifest } from '@umbod/core';
+import type { ApprovalRequest, AuditEntry, Manifest, RuleAnalysis, ToolUsageStats } from '@umbod/core';
 
 function escapeHtml(value: string): string {
 	return value
@@ -13,7 +13,13 @@ function serializeJson(value: unknown): string {
 	return JSON.stringify(value).replaceAll('&', '\\u0026').replaceAll('<', '\\u003c').replaceAll('>', '\\u003e');
 }
 
-export function renderDashboard(manifest: Manifest, entries: AuditEntry[], approvals: ApprovalRequest[]): string {
+export function renderDashboard(
+	manifest: Manifest,
+	entries: AuditEntry[],
+	approvals: ApprovalRequest[],
+	toolUsage: ToolUsageStats,
+	ruleAnalysis: RuleAnalysis
+): string {
 	return `<!doctype html>
 <html lang="en">
   <head>
@@ -91,6 +97,50 @@ export function renderDashboard(manifest: Manifest, entries: AuditEntry[], appro
               </div>
             </article>
           </template>
+        </div>
+      </section>
+
+      <section class="panel panel-insights">
+        <div class="panel-header">
+          <h2><span class="section-icon" aria-hidden="true">&#9678;</span> Insights</h2>
+          <span class="panel-meta" x-text="$store.dash.insights.tools.totals.entries + ' calls'">0 calls</span>
+        </div>
+        <div class="insights-grid">
+          <div>
+            <h3 class="insight-heading">Tool Use</h3>
+            <template x-if="$store.dash.insights.tools.byTool.length === 0"><div class="empty-state">No tool history yet.</div></template>
+            <div class="tool-usage-list">
+              <template x-for="row in $store.dash.insights.tools.byTool" :key="row.agent + ':' + row.tool">
+                <div class="tool-usage-row">
+                  <div class="tool-usage-label"><span x-text="row.tool"></span><small x-text="row.agent + ' · ' + row.count"></small></div>
+                  <div class="decision-bar" aria-label="Decision distribution">
+                    <span class="decision-bar-allow" :style="'width:' + (row.decisions.allow / row.count * 100) + '%'" title="Allowed"></span>
+                    <span class="decision-bar-approve" :style="'width:' + (row.decisions.approve / row.count * 100) + '%'" title="Approval required"></span>
+                    <span class="decision-bar-block" :style="'width:' + (row.decisions.block / row.count * 100) + '%'" title="Blocked"></span>
+                  </div>
+                </div>
+              </template>
+            </div>
+          </div>
+          <div>
+            <h3 class="insight-heading">Rule Health</h3>
+            <template x-if="$store.dash.insights.rules.rules.length === 0"><div class="empty-state">No edicts to inspect.</div></template>
+            <div class="rule-health-list">
+              <template x-for="rule in $store.dash.insights.rules.rules" :key="rule.pattern">
+                <div class="rule-health-row"><code x-text="rule.pattern"></code><span class="health-chip" :class="'health-chip--' + rule.status" x-text="rule.status"></span></div>
+              </template>
+            </div>
+          </div>
+        </div>
+        <template x-if="$store.dash.insights.rules.tomlSnippet">
+          <div class="suggestions-block">
+            <div class="suggestions-header"><h3 class="insight-heading">Suggested Edicts</h3><button type="button" class="copy-button" @click="$store.dash.copySuggestions()">Copy</button></div>
+            <pre class="suggestions-code" x-text="$store.dash.insights.rules.tomlSnippet"></pre>
+          </div>
+        </template>
+        <div class="coverage-block">
+          <button type="button" class="button button-secondary" :disabled="$store.dash.coverageLoading" @click="$store.dash.loadCoverage()" x-text="$store.dash.coverageLoading ? 'Scanning transcripts…' : 'Check transcript coverage'"></button>
+          <template x-if="$store.dash.coverage"><span class="coverage-summary" x-text="Math.round($store.dash.coverage.coverageRatio * 100) + '% covered · ' + $store.dash.coverage.totals.gaps + ' gaps'"></span></template>
         </div>
       </section>
 
@@ -188,7 +238,7 @@ export function renderDashboard(manifest: Manifest, entries: AuditEntry[], appro
       </section>
     </main>
 
-    <script id="umbod-bootstrap" type="application/json">${serializeJson({ manifest, entries, approvals })}</script>
+    <script id="umbod-bootstrap" type="application/json">${serializeJson({ manifest, entries, approvals, insights: { tools: toolUsage, rules: ruleAnalysis } })}</script>
   </body>
 </html>`;
 }

@@ -37,6 +37,14 @@ export function parseEvaluatePayload(payload: unknown): ToolCall {
 		throw new Error('invalid tool call: timestamp must be a string');
 	}
 
+	if (payload.sessionId !== undefined && typeof payload.sessionId !== 'string') {
+		throw new Error('invalid tool call: sessionId must be a string');
+	}
+
+	if (payload.toolUseId !== undefined && typeof payload.toolUseId !== 'string') {
+		throw new Error('invalid tool call: toolUseId must be a string');
+	}
+
 	return {
 		agent: payload.agent,
 		tool: payload.tool,
@@ -45,6 +53,8 @@ export function parseEvaluatePayload(payload: unknown): ToolCall {
 		workingDirectory: payload.workingDirectory,
 		inputs: payload.inputs as Record<string, unknown> | undefined,
 		timestamp: payload.timestamp ?? new Date().toISOString(),
+		sessionId: payload.sessionId,
+		toolUseId: payload.toolUseId,
 	};
 }
 

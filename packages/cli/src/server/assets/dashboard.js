@@ -16,6 +16,12 @@
 			entries: Array.isArray(bootstrap.entries) ? bootstrap.entries : [],
 			approvals: Array.isArray(bootstrap.approvals) ? bootstrap.approvals : [],
 			manifest: bootstrap.manifest || {},
+			insights: bootstrap.insights || {
+				tools: { totals: { entries: 0 }, byTool: [] },
+				rules: { rules: [], tomlSnippet: '' },
+			},
+			coverage: null,
+			coverageLoading: false,
 			page: 1,
 			pageSize: 25,
 			searchQuery: '',
@@ -188,6 +194,45 @@
 					if (this.page > this.totalPages) this.page = this.totalPages;
 				} catch (e) {
 					console.error('refresh failed:', e);
+				}
+			},
+
+			loadInsights: async function () {
+				try {
+					var results = await Promise.all([
+						fetch('/api/analytics/tools').then(function (r) {
+							return r.json();
+						}),
+						fetch('/api/analytics/rules').then(function (r) {
+							return r.json();
+						}),
+					]);
+					this.insights = { tools: results[0], rules: results[1] };
+				} catch (e) {
+					console.error('insights refresh failed:', e);
+				}
+			},
+
+			loadCoverage: async function () {
+				this.coverageLoading = true;
+				try {
+					var response = await fetch('/api/analytics/coverage');
+					if (!response.ok) throw new Error('coverage fetch failed: ' + response.status);
+					this.coverage = await response.json();
+				} catch (e) {
+					console.error('coverage fetch failed:', e);
+				} finally {
+					this.coverageLoading = false;
+				}
+			},
+
+			copySuggestions: async function () {
+				var value = this.insights.rules.tomlSnippet || '';
+				if (!value) return;
+				try {
+					await navigator.clipboard.writeText(value);
+				} catch (e) {
+					console.error('copy failed:', e);
 				}
 			},
 

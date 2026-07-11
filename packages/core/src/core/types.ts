@@ -37,6 +37,8 @@ export interface ToolCall {
 	workingDirectory?: string;
 	inputs?: Record<string, unknown>;
 	timestamp: string;
+	sessionId?: string;
+	toolUseId?: string;
 }
 
 export interface EvaluationResult {

@@ -1,6 +1,6 @@
 import type { Server, ServerWebSocket } from 'bun';
 
-import { createUmbod, logger, type Manifest, type Umbod } from '@umbod/core';
+import { analyzeRules, computeToolUsage, createUmbod, logger, type Manifest, type Umbod } from '@umbod/core';
 
 import { CliApprovalQueue } from './cli-approval.ts';
 import { renderDashboard } from './ui.ts';
@@ -24,7 +24,13 @@ function parseLimitParam(url: URL): number | undefined {
 }
 
 function handleDashboard(umbod: Umbod, limit?: number): Response {
-	const html = renderDashboard(umbod.manifest, umbod.auditLog.listRecent(limit), umbod.listPendingApprovals());
+	const html = renderDashboard(
+		umbod.manifest,
+		umbod.auditLog.listRecent(limit),
+		umbod.listPendingApprovals(),
+		computeToolUsage(umbod.auditLog, umbod.manifest),
+		analyzeRules(umbod.manifest, umbod.auditLog)
+	);
 	return new Response(html, {
 		headers: { 'content-type': 'text/html; charset=utf-8' },
 	});

@@ -102,6 +102,8 @@ export function normalizePayload(agent: string, payload: unknown, options: Norma
 		workingDirectory: options.workingDirectoryPaths ? firstString(payload, options.workingDirectoryPaths) : undefined,
 		inputs: isRecord(payload) ? payload : { raw: payload },
 		timestamp: new Date().toISOString(),
+		sessionId: firstString(payload, ['session_id', 'sessionId', 'thread_id']),
+		toolUseId: firstString(payload, ['tool_use_id', 'toolUseId', 'call_id']),
 	};
 }
 

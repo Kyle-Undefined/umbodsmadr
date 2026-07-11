@@ -3,6 +3,7 @@
 import { errorMessage, logger, runConfigureCommand } from '@umbod/core';
 
 import { runStartCommand } from './commands/start.ts';
+import { runAnalyzeCommand, type AnalyzeTarget } from './commands/analyze.ts';
 
 function readFlag(args: string[], name: string): string | undefined {
 	const index = args.indexOf(name);
@@ -34,16 +35,22 @@ function readIntFlag(args: string[], name: string): number | undefined {
 	return parsed;
 }
 
+function hasFlag(args: string[], name: string): boolean {
+	return args.includes(name);
+}
+
 function showHelp(): void {
 	console.log(`umbod
 
 Usage:
   umbod start [--env path] [--port 9090] [--host 127.0.0.1]
   umbod configure [--agent codex|cursor|claude|gemini] [--url http://127.0.0.1:9090] [--output .umbod]
+  umbod analyze tools|rules|coverage [--env path] [--since 14d] [--project dir] [--agent name] [--json]
 
 Commands:
   start       Load a manifest, start the local server, and initialize SQLite.
   configure   Create configuration for agent settings files.
+  analyze     Report tool usage, rule health, or transcript coverage.
 `);
 }
 
@@ -69,6 +76,23 @@ async function main(): Promise<void> {
 			agent: readFlag(args, '--agent'),
 			outputDir: readFlag(args, '--output'),
 			url: readFlag(args, '--url'),
+		});
+		return;
+	}
+
+	if (command === 'analyze') {
+		const [target, ...analyzeArgs] = args;
+		if (target !== 'tools' && target !== 'rules' && target !== 'coverage') {
+			throw new Error('analyze requires one of: tools, rules, coverage');
+		}
+		await runAnalyzeCommand(target as AnalyzeTarget, {
+			envPath: readFlag(analyzeArgs, '--env'),
+			since: readFlag(analyzeArgs, '--since'),
+			until: readFlag(analyzeArgs, '--until'),
+			project: readFlag(analyzeArgs, '--project'),
+			agent: readFlag(analyzeArgs, '--agent'),
+			minOccurrences: readIntFlag(analyzeArgs, '--min-occurrences'),
+			json: hasFlag(analyzeArgs, '--json'),
 		});
 		return;
 	}

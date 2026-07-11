@@ -53,6 +53,8 @@ describe('HTTP > GET', () => {
 		expect(res.headers.get('content-type')).toContain('text/html');
 		const body = await res.text();
 		expect(body).toContain('umbo');
+		expect(body).toContain('Insights');
+		expect(body).toContain('"insights"');
 	});
 
 	test('GET /health returns ok', async () => {

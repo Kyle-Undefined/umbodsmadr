@@ -14,7 +14,16 @@ export const codexAdapter: HookAdapter = {
 	normalizePayload(payload) {
 		return normalizePayload('codex', payload, {
 			toolPaths: ['tool_name', 'toolName', 'tool'],
-			commandPaths: ['tool_input.command', 'arguments.command', 'command', 'input.command'],
+			commandPaths: [
+				'tool_input.command',
+				'tool_input.cmd',
+				'arguments.command',
+				'arguments.cmd',
+				'command',
+				'cmd',
+				'input.command',
+				'input.cmd',
+			],
 			inputValuePaths: [
 				'tool_input.file_path',
 				'tool_input.path',
@@ -28,6 +37,8 @@ export const codexAdapter: HookAdapter = {
 			workingDirectoryPaths: ['cwd', 'working_directory'],
 			fallbackTool: 'bash',
 			toolAliases: {
+				exec_command: 'bash',
+				shell: 'bash',
 				apply_patch: 'edit',
 				edit: 'edit',
 				write: 'write',
