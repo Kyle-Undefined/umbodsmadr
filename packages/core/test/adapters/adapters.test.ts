@@ -83,6 +83,20 @@ describe('claude adapter', () => {
 		const hooks = (result.config.contents as Record<string, unknown>).hooks as Record<string, unknown>;
 		expect(hooks).toHaveProperty('PreToolUse');
 	});
+
+	test('maps disabled umbod timeout to a long Claude hook timeout', () => {
+		const result = claudeAdapter.install({
+			url: 'http://127.0.0.1:9090',
+			outputDir: '/tmp/umbod',
+			timeoutSeconds: 0,
+		});
+		const hooks = (
+			result.config.contents as {
+				hooks: { PreToolUse: Array<{ hooks: Array<{ timeout: number }> }> };
+			}
+		).hooks;
+		expect(hooks.PreToolUse[0]?.hooks[0]?.timeout).toBe(86_400);
+	});
 });
 
 // ── Cursor adapter ───────────────────────────────────────────

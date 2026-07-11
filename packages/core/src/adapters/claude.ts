@@ -1,7 +1,7 @@
 import { homedir } from 'node:os';
 import path from 'node:path';
 
-import type { HookAdapter } from './base.ts';
+import { normalizeHookTimeoutSeconds, type HookAdapter } from './base.ts';
 import { buildCurlWrapperScript, buildPowerShellWrapperScript, normalizePayload } from '../hooks/adapter-utils.ts';
 
 export const claudeAdapter: HookAdapter = {
@@ -25,6 +25,7 @@ export const claudeAdapter: HookAdapter = {
 		const targetHome = options.homeDir ?? homedir();
 		const scriptFile = isWindows ? 'hook-claude.ps1' : 'hook-claude.sh';
 		const scriptPath = targetPath.join(options.outputDir, scriptFile);
+		const timeoutSeconds = normalizeHookTimeoutSeconds(options.timeoutSeconds);
 		const command = isWindows
 			? `powershell.exe -NonInteractive -ExecutionPolicy Bypass -File "${scriptPath}"`
 			: scriptPath;
@@ -50,7 +51,7 @@ export const claudeAdapter: HookAdapter = {
 									{
 										type: 'command',
 										command,
-										timeout: options.timeoutSeconds,
+										timeout: timeoutSeconds,
 										statusMessage: 'Checking umbod policy',
 										failClosed: true,
 									},

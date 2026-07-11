@@ -1,5 +1,15 @@
 import type { ToolCall } from '../core/types.ts';
 
+const DISABLED_HOOK_TIMEOUT_FALLBACK_SECONDS = 86_400;
+
+/**
+ * Agent hook schemas do not consistently support Umbod's `0 = disabled`
+ * convention. Use a long finite timeout instead of sending an invalid zero.
+ */
+export function normalizeHookTimeoutSeconds(timeoutSeconds: number): number {
+	return timeoutSeconds === 0 ? DISABLED_HOOK_TIMEOUT_FALLBACK_SECONDS : timeoutSeconds;
+}
+
 export interface GeneratedHookAsset {
 	relativePath: string;
 	contents: string;

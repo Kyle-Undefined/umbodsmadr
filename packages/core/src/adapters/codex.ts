@@ -1,10 +1,8 @@
 import { homedir } from 'node:os';
 import path from 'node:path';
 
-import type { HookAdapter } from './base.ts';
+import { normalizeHookTimeoutSeconds, type HookAdapter } from './base.ts';
 import { buildCurlWrapperScript, buildPowerShellWrapperScript, normalizePayload } from '../hooks/adapter-utils.ts';
-
-const DISABLED_TIMEOUT_FALLBACK_SECONDS = 86_400;
 
 export const codexAdapter: HookAdapter = {
 	id: 'codex',
@@ -53,7 +51,7 @@ export const codexAdapter: HookAdapter = {
 		const targetHome = options.homeDir ?? homedir();
 		const scriptFile = isWindows ? 'hook-codex.ps1' : 'hook-codex.sh';
 		const scriptPath = targetPath.join(options.outputDir, scriptFile);
-		const timeoutSeconds = options.timeoutSeconds === 0 ? DISABLED_TIMEOUT_FALLBACK_SECONDS : options.timeoutSeconds;
+		const timeoutSeconds = normalizeHookTimeoutSeconds(options.timeoutSeconds);
 		const command = isWindows
 			? `powershell.exe -NonInteractive -ExecutionPolicy Bypass -File "${scriptPath}"`
 			: scriptPath;
