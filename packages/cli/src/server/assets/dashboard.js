@@ -11,6 +11,30 @@
 		console.error('Failed to parse bootstrap data:', e);
 	}
 
+	function entryMatches(entry, store, query) {
+		var filters = [
+			[store.filterOutcome, store.outcomeKey(entry)],
+			[store.filterTool, entry.tool],
+			[store.filterAgent, entry.agent],
+		];
+		var searchable = [
+			entry.agent,
+			entry.tool,
+			entry.command,
+			entry.classification,
+			entry.reason,
+			entry.matchedRule || '',
+		]
+			.join(' ')
+			.toLowerCase();
+		return (
+			filters.every(function (pair) {
+				return !pair[0] || pair[0] === pair[1];
+			}) &&
+			(!query || searchable.includes(query))
+		);
+	}
+
 	document.addEventListener('alpine:init', function () {
 		Alpine.store('dash', {
 			entries: Array.isArray(bootstrap.entries) ? bootstrap.entries : [],
@@ -22,6 +46,17 @@
 			},
 			coverage: null,
 			coverageLoading: false,
+			insightsOpen: false,
+			insightsExpanded: false,
+			explorerLoading: false,
+			explorerLoaded: false,
+			explorerEntries: [],
+			explorerPage: 1,
+			explorerPageSize: 50,
+			explorerTotal: 0,
+			explorerTotalPages: 1,
+			explorerFilters: { tool: '', agent: '', classification: '', decision: '', project: '', search: '' },
+			explorerOpenId: null,
 			page: 1,
 			pageSize: 25,
 			searchQuery: '',
@@ -106,24 +141,7 @@
 				var self = this;
 				var q = self.searchQuery.toLowerCase();
 				return self.entries.filter(function (entry) {
-					var key = self.outcomeKey(entry);
-					if (self.filterOutcome && key !== self.filterOutcome) return false;
-					if (self.filterTool && entry.tool !== self.filterTool) return false;
-					if (self.filterAgent && entry.agent !== self.filterAgent) return false;
-					if (q) {
-						var text = [
-							entry.agent,
-							entry.tool,
-							entry.command,
-							entry.classification,
-							entry.reason,
-							entry.matchedRule || '',
-						]
-							.join(' ')
-							.toLowerCase();
-						if (text.indexOf(q) === -1) return false;
-					}
-					return true;
+					return entryMatches(entry, self, q);
 				});
 			},
 
@@ -224,6 +242,54 @@
 				} finally {
 					this.coverageLoading = false;
 				}
+			},
+
+			loadExplorer: async function () {
+				this.explorerLoading = true;
+				try {
+					var params = new URLSearchParams({
+						page: String(this.explorerPage),
+						pageSize: String(this.explorerPageSize),
+					});
+					Object.entries(this.explorerFilters).forEach(function (entry) {
+						if (entry[1]) params.set(entry[0], entry[1]);
+					});
+					var response = await fetch('/api/analytics/calls?' + params.toString());
+					if (!response.ok) throw new Error('call explorer fetch failed: ' + response.status);
+					var result = await response.json();
+					this.explorerEntries = Array.isArray(result.entries) ? result.entries : [];
+					this.explorerPage = result.page || 1;
+					this.explorerTotal = result.total || 0;
+					this.explorerTotalPages = result.totalPages || 1;
+					this.explorerLoaded = true;
+					this.explorerOpenId = null;
+				} catch (e) {
+					console.error('call explorer fetch failed:', e);
+				} finally {
+					this.explorerLoading = false;
+				}
+			},
+
+			toggleInsights: function () {
+				this.insightsOpen = !this.insightsOpen;
+				if (this.insightsOpen && !this.explorerLoaded) this.loadExplorer();
+			},
+
+			applyExplorerFilters: function () {
+				this.explorerPage = 1;
+				this.loadExplorer();
+			},
+
+			changeExplorerPage: function (page) {
+				if (page < 1 || page > this.explorerTotalPages || page === this.explorerPage) return;
+				this.explorerPage = page;
+				this.loadExplorer();
+			},
+
+			resetExplorer: function () {
+				this.explorerFilters = { tool: '', agent: '', classification: '', decision: '', project: '', search: '' };
+				this.explorerPage = 1;
+				this.loadExplorer();
 			},
 
 			copySuggestions: async function () {

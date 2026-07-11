@@ -74,6 +74,19 @@ describe('analytics API routes', () => {
 			};
 			expect(rules.rules).toEqual([]);
 
+			const calls = (await fetchJson(
+				umbod,
+				'/api/analytics/calls?tool=bash&agent=claude&classification=readonly&decision=allow&search=status'
+			)) as {
+				entries: Array<{ command: string; sessionId?: string }>;
+				page: number;
+				pageSize: number;
+				total: number;
+				totalPages: number;
+			};
+			expect(calls.entries).toEqual([expect.objectContaining({ command: 'git status', sessionId: 'session-1' })]);
+			expect(calls).toMatchObject({ page: 1, pageSize: 50, total: 1, totalPages: 1 });
+
 			const coverage = (await fetchJson(umbod, '/api/analytics/coverage?since=2026-07-01T00:00:00.000Z')) as {
 				coverageRatio: number;
 				totals: { matched: number };

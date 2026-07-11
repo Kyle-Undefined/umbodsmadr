@@ -28,9 +28,11 @@ export const cursorAdapter: HookAdapter = {
 		});
 	},
 	install(options) {
-		const isWindows = process.platform === 'win32';
+		const isWindows = options.platform ? options.platform === 'windows' : process.platform === 'win32';
+		const targetPath = isWindows ? path.win32 : path.posix;
+		const targetHome = options.homeDir ?? homedir();
 		const scriptFile = isWindows ? 'hook-cursor.ps1' : 'hook-cursor.sh';
-		const scriptPath = path.join(options.outputDir, scriptFile);
+		const scriptPath = targetPath.join(options.outputDir, scriptFile);
 		const command = isWindows
 			? `powershell.exe -NonInteractive -ExecutionPolicy Bypass -File "${scriptPath}"`
 			: scriptPath;
@@ -47,7 +49,7 @@ export const cursorAdapter: HookAdapter = {
 			],
 			config: {
 				fileName: 'cursor.json',
-				settingsPath: path.join(homedir(), '.cursor', 'hooks.json'),
+				settingsPath: targetPath.join(targetHome, '.cursor', 'hooks.json'),
 				contents: {
 					version: 1,
 					hooks: {

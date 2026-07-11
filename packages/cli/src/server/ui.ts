@@ -101,29 +101,35 @@ export function renderDashboard(
       </section>
 
       <section class="panel panel-insights">
-        <div class="panel-header">
+        <button type="button" class="insights-disclosure" @click="$store.dash.toggleInsights()" :aria-expanded="$store.dash.insightsOpen">
           <h2><span class="section-icon" aria-hidden="true">&#9678;</span> Insights</h2>
-          <span class="panel-meta" x-text="$store.dash.insights.tools.totals.entries + ' calls'">0 calls</span>
-        </div>
+          <span class="insights-disclosure-meta"><span class="panel-meta" x-text="$store.dash.insights.tools.totals.entries.toLocaleString() + ' calls'">0 calls</span><span class="disclosure-chevron" :class="{ 'disclosure-chevron--open': $store.dash.insightsOpen }">&#9662;</span></span>
+        </button>
+        <div class="insights-content" x-show="$store.dash.insightsOpen" x-cloak>
         <div class="insights-grid">
-          <div>
-            <h3 class="insight-heading">Tool Use</h3>
+          <div class="insight-card">
+            <div class="insight-card-header">
+              <h3 class="insight-heading">Tool Use</h3>
+              <div class="decision-legend" aria-label="Decision colors"><span class="legend-item legend-allow">Allow</span><span class="legend-item legend-approve">Review</span><span class="legend-item legend-block">Block</span></div>
+            </div>
             <template x-if="$store.dash.insights.tools.byTool.length === 0"><div class="empty-state">No tool history yet.</div></template>
             <div class="tool-usage-list">
-              <template x-for="row in $store.dash.insights.tools.byTool" :key="row.agent + ':' + row.tool">
+              <template x-for="row in ($store.dash.insightsExpanded ? $store.dash.insights.tools.byTool : $store.dash.insights.tools.byTool.slice(0, 8))" :key="row.agent + ':' + row.tool">
                 <div class="tool-usage-row">
-                  <div class="tool-usage-label"><span x-text="row.tool"></span><small x-text="row.agent + ' · ' + row.count"></small></div>
+                  <div class="tool-usage-label"><span :title="row.tool" x-text="row.tool"></span><small x-text="row.agent"></small></div>
                   <div class="decision-bar" aria-label="Decision distribution">
                     <span class="decision-bar-allow" :style="'width:' + (row.decisions.allow / row.count * 100) + '%'" title="Allowed"></span>
                     <span class="decision-bar-approve" :style="'width:' + (row.decisions.approve / row.count * 100) + '%'" title="Approval required"></span>
                     <span class="decision-bar-block" :style="'width:' + (row.decisions.block / row.count * 100) + '%'" title="Blocked"></span>
                   </div>
+                  <span class="tool-usage-count" x-text="row.count.toLocaleString()"></span>
                 </div>
               </template>
             </div>
+            <button x-show="$store.dash.insights.tools.byTool.length > 8" type="button" class="insight-toggle" @click="$store.dash.insightsExpanded = !$store.dash.insightsExpanded" x-text="$store.dash.insightsExpanded ? 'Show top tools' : 'Show ' + ($store.dash.insights.tools.byTool.length - 8) + ' more'"></button>
           </div>
-          <div>
-            <h3 class="insight-heading">Rule Health</h3>
+          <div class="insight-card">
+            <div class="insight-card-header"><h3 class="insight-heading">Rule Health</h3><span class="insight-card-meta" x-text="$store.dash.insights.rules.rules.length + ' rules'"></span></div>
             <template x-if="$store.dash.insights.rules.rules.length === 0"><div class="empty-state">No edicts to inspect.</div></template>
             <div class="rule-health-list">
               <template x-for="rule in $store.dash.insights.rules.rules" :key="rule.pattern">
@@ -132,15 +138,90 @@ export function renderDashboard(
             </div>
           </div>
         </div>
+        <div class="call-explorer">
+          <div class="call-explorer-header">
+            <div><h3 class="insight-heading">Edict Explorer</h3><p>Inspect concrete operations, policy context, and session-linked data.</p></div>
+            <span class="insight-card-meta" x-text="$store.dash.explorerLoading ? 'Loading…' : $store.dash.explorerTotal.toLocaleString() + ' matches'"></span>
+          </div>
+          <div class="call-explorer-filters">
+            <input class="search-input explorer-search" type="search" placeholder="Command contains…" x-model="$store.dash.explorerFilters.search" @input.debounce.300ms="$store.dash.applyExplorerFilters()" />
+            <select class="filter-select" x-model="$store.dash.explorerFilters.tool" @change="$store.dash.applyExplorerFilters()">
+              <option value="">All tools</option>
+              <template x-for="tool in [...new Set($store.dash.insights.tools.byTool.map(row => row.tool))].sort()" :key="tool"><option :value="tool" x-text="tool"></option></template>
+            </select>
+            <select class="filter-select" x-model="$store.dash.explorerFilters.agent" @change="$store.dash.applyExplorerFilters()">
+              <option value="">All agents</option>
+              <template x-for="agent in $store.dash.insights.tools.totals.agents" :key="agent"><option :value="agent" x-text="agent"></option></template>
+            </select>
+            <select class="filter-select" x-model="$store.dash.explorerFilters.classification" @change="$store.dash.applyExplorerFilters()">
+              <option value="">All types</option><option value="readonly">Readonly</option><option value="stateful">Stateful</option><option value="external">External</option><option value="destructive">Destructive</option><option value="unknown">Unknown</option>
+            </select>
+            <select class="filter-select" x-model="$store.dash.explorerFilters.decision" @change="$store.dash.applyExplorerFilters()">
+              <option value="">All outcomes</option><option value="allow">Allowed</option><option value="approve">Approval</option><option value="block">Blocked</option>
+            </select>
+            <select class="filter-select" x-model="$store.dash.explorerFilters.project" @change="$store.dash.applyExplorerFilters()">
+              <option value="">All projects</option>
+              <template x-for="project in $store.dash.insights.tools.totals.projects" :key="project"><option :value="project" x-text="project"></option></template>
+            </select>
+            <button type="button" class="copy-button" @click="$store.dash.resetExplorer()">Reset</button>
+          </div>
+          <div class="call-explorer-list">
+            <template x-if="!$store.dash.explorerLoading && $store.dash.explorerEntries.length === 0"><div class="empty-state">No calls match these filters.</div></template>
+            <template x-for="entry in $store.dash.explorerEntries" :key="entry.id">
+              <article class="call-explorer-row" :class="{ 'call-explorer-row--open': $store.dash.explorerOpenId === entry.id }">
+                <button type="button" class="call-explorer-summary" @click="$store.dash.explorerOpenId = $store.dash.explorerOpenId === entry.id ? null : entry.id">
+                  <span class="call-tool" x-text="entry.tool"></span>
+                  <code class="call-command" x-text="entry.command" :title="entry.command"></code>
+                  <span class="call-type" x-text="entry.classification"></span>
+                  <span class="health-chip" :class="'call-decision--' + entry.decision" x-text="entry.decision"></span>
+                  <time x-text="$store.dash.formatTimestamp(entry.timestamp)"></time>
+                </button>
+                <div class="call-explorer-detail" x-show="$store.dash.explorerOpenId === entry.id" x-cloak>
+                  <dl><div><dt>Agent</dt><dd x-text="entry.agent"></dd></div><div><dt>Project</dt><dd x-text="entry.workingDirectory || '—'"></dd></div><div><dt>Session</dt><dd x-text="entry.sessionId || '—'"></dd></div><div><dt>Matched rule</dt><dd x-text="entry.matchedRule || 'fallback / automatic'"></dd></div></dl>
+                  <p class="call-reason" x-text="entry.reason"></p>
+                  <pre x-text="JSON.stringify(entry.inputs, null, 2)"></pre>
+                </div>
+              </article>
+            </template>
+          </div>
+          <div class="explorer-pagination" x-show="$store.dash.explorerTotal > 0">
+            <button type="button" class="pagination-btn" :disabled="$store.dash.explorerPage <= 1 || $store.dash.explorerLoading" @click="$store.dash.changeExplorerPage($store.dash.explorerPage - 1)">Previous</button>
+            <span x-text="'Page ' + $store.dash.explorerPage.toLocaleString() + ' of ' + $store.dash.explorerTotalPages.toLocaleString()"></span>
+            <button type="button" class="pagination-btn" :disabled="$store.dash.explorerPage >= $store.dash.explorerTotalPages || $store.dash.explorerLoading" @click="$store.dash.changeExplorerPage($store.dash.explorerPage + 1)">Next</button>
+          </div>
+        </div>
         <template x-if="$store.dash.insights.rules.tomlSnippet">
           <div class="suggestions-block">
             <div class="suggestions-header"><h3 class="insight-heading">Suggested Edicts</h3><button type="button" class="copy-button" @click="$store.dash.copySuggestions()">Copy</button></div>
+            <div class="suggestion-impact-list">
+              <template x-for="suggestion in $store.dash.insights.rules.suggestions.filter(item => item.impact)" :key="suggestion.pattern">
+                <article class="suggestion-impact-card">
+                  <div class="suggestion-impact-header"><code x-text="suggestion.pattern"></code><span class="health-chip" :class="'call-decision--' + suggestion.decision" x-text="suggestion.decision"></span></div>
+                  <p x-text="suggestion.rationale"></p>
+                  <div class="suggestion-comparison">
+                    <div class="comparison-heading">Outcome</div><div class="comparison-heading">Current</div><div class="comparison-heading">Proposed</div>
+                    <div>Explicit coverage</div><div x-text="suggestion.impact.explicitlyCoveredBefore + ' / ' + suggestion.impact.matchingCalls"></div><div class="comparison-positive" x-text="(suggestion.impact.explicitlyCoveredBefore + suggestion.impact.coverageGained) + ' / ' + suggestion.impact.matchingCalls"></div>
+                    <div>Allowed</div><div x-text="suggestion.impact.before.allow"></div><div x-text="suggestion.impact.after.allow"></div>
+                    <div>Approval prompts</div><div x-text="suggestion.impact.before.approve"></div><div x-text="suggestion.impact.after.approve"></div>
+                    <div>Blocked</div><div x-text="suggestion.impact.before.block"></div><div x-text="suggestion.impact.after.block"></div>
+                  </div>
+                  <div class="suggestion-impact-summary"><span x-text="'+' + suggestion.impact.coverageGained + ' explicitly covered'"></span><span x-text="suggestion.impact.decisionChanges + ' decision changes'"></span></div>
+                  <template x-if="suggestion.conflicts.length"><div class="suggestion-conflicts"><template x-for="conflict in suggestion.conflicts"><p x-text="conflict"></p></template></div></template>
+                  <details class="suggestion-gaps">
+                    <summary x-text="suggestion.impact.gapCount + ' current coverage gaps'"></summary>
+                    <div class="suggestion-gap-list"><template x-for="gap in suggestion.impact.gaps" :key="gap.id"><div><code x-text="gap.command"></code><span x-text="gap.classification + ' · ' + gap.decision"></span></div></template></div>
+                    <p x-show="suggestion.impact.gapCount > suggestion.impact.gaps.length" x-text="'Showing first ' + suggestion.impact.gaps.length + ' gaps.'"></p>
+                  </details>
+                </article>
+              </template>
+            </div>
             <pre class="suggestions-code" x-text="$store.dash.insights.rules.tomlSnippet"></pre>
           </div>
         </template>
         <div class="coverage-block">
           <button type="button" class="button button-secondary" :disabled="$store.dash.coverageLoading" @click="$store.dash.loadCoverage()" x-text="$store.dash.coverageLoading ? 'Scanning transcripts…' : 'Check transcript coverage'"></button>
           <template x-if="$store.dash.coverage"><span class="coverage-summary" x-text="Math.round($store.dash.coverage.coverageRatio * 100) + '% covered · ' + $store.dash.coverage.totals.gaps + ' gaps'"></span></template>
+        </div>
         </div>
       </section>
 

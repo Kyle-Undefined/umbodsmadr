@@ -3,6 +3,45 @@ import type { ApprovalDecision, Manifest, PolicyConfig, ServerConfig } from '../
 import { isRecord } from '../utils/guards.ts';
 import { errorMessage } from '../utils/errors.ts';
 
+export interface DefaultManifestOptions {
+	name?: string;
+	version?: string;
+	timeout?: number;
+	defaultUnknown?: ApprovalDecision;
+	approvalMethod?: PolicyConfig['approval_method'];
+}
+
+/** Render Umbod's supported starter manifest for hosts and the CLI. */
+export function createDefaultManifestSource(options: DefaultManifestOptions = {}): string {
+	const name = options.name ?? 'dev';
+	const version = options.version ?? '1.0.0';
+	const timeout = options.timeout ?? 30;
+	const defaultUnknown = options.defaultUnknown ?? 'block';
+	const approvalMethod = options.approvalMethod ?? 'web';
+
+	if (!Number.isFinite(timeout) || timeout < 0) {
+		throw new Error('default manifest timeout must be a non-negative number');
+	}
+
+	return `[env]
+name = ${JSON.stringify(name)}
+version = ${JSON.stringify(version)}
+timeout = ${timeout}
+
+[policy]
+default_unknown = ${JSON.stringify(defaultUnknown)}
+approval_method = ${JSON.stringify(approvalMethod)}
+
+[rules]
+"git log *" = "allow"
+"ls *" = "allow"
+"rm *" = "approve"
+"git push *" = "approve"
+"* --force" = "approve"
+'/(^|\\/)\\.[^\\s\\/]+/' = "block"
+`;
+}
+
 function isDecision(value: unknown): value is ApprovalDecision {
 	return value === 'allow' || value === 'block' || value === 'approve';
 }

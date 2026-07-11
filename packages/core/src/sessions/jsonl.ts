@@ -1,5 +1,48 @@
 const MAX_CARRY_BYTES = 16 * 1024 * 1024;
 
+interface JsonlState {
+	carry: string;
+	discardingOversizedLine: boolean;
+}
+
+function parseRecord(line: string): unknown | undefined {
+	if (line.length === 0 || line.length > MAX_CARRY_BYTES) return undefined;
+	try {
+		return JSON.parse(line);
+	} catch {
+		return undefined;
+	}
+}
+
+function consumeLines(text: string, state: JsonlState): unknown[] {
+	const records: unknown[] = [];
+	let start = 0;
+	for (let newline = text.indexOf('\n'); newline !== -1; newline = text.indexOf('\n', start)) {
+		const record = parseRecord(text.slice(start, newline).trim());
+		if (record !== undefined) records.push(record);
+		start = newline + 1;
+	}
+	state.carry = text.slice(start);
+	if (state.carry.length > MAX_CARRY_BYTES) {
+		state.carry = '';
+		state.discardingOversizedLine = true;
+	}
+	return records;
+}
+
+async function* fileChunks(path: string): AsyncGenerator<Uint8Array> {
+	const reader = Bun.file(path).stream().getReader();
+	try {
+		for (;;) {
+			const { done, value } = await reader.read();
+			if (done) return;
+			yield value;
+		}
+	} finally {
+		reader.releaseLock();
+	}
+}
+
 /**
  * Reads newline-delimited JSON without loading an entire transcript into memory.
  * A malformed or oversized line is ignored so a damaged transcript cannot stop
@@ -7,50 +50,21 @@ const MAX_CARRY_BYTES = 16 * 1024 * 1024;
  */
 export async function* jsonlRecords(path: string): AsyncGenerator<unknown> {
 	const decoder = new TextDecoder();
-	let carry = '';
-	let discardingOversizedLine = false;
+	const state: JsonlState = { carry: '', discardingOversizedLine: false };
 
-	const consume = function* (text: string): Generator<unknown> {
-		let start = 0;
-		while (true) {
-			const newline = text.indexOf('\n', start);
-			if (newline === -1) break;
-			const line = text.slice(start, newline).trim();
-			start = newline + 1;
-			if (line.length === 0 || line.length > MAX_CARRY_BYTES) continue;
-			try {
-				yield JSON.parse(line);
-			} catch {
-				// Session logs may be interrupted mid-write; ignore that record.
-			}
-		}
-		carry = text.slice(start);
-		if (carry.length > MAX_CARRY_BYTES) {
-			carry = '';
-			discardingOversizedLine = true;
-		}
-	};
-
-	for await (const chunk of Bun.file(path).stream()) {
+	for await (const chunk of fileChunks(path)) {
 		let text = decoder.decode(chunk, { stream: true });
-		if (discardingOversizedLine) {
+		if (state.discardingOversizedLine) {
 			const newline = text.indexOf('\n');
 			if (newline === -1) continue;
 			text = text.slice(newline + 1);
-			discardingOversizedLine = false;
+			state.discardingOversizedLine = false;
 		}
-		for (const record of consume(carry + text)) yield record;
+		for (const record of consumeLines(state.carry + text, state)) yield record;
 	}
 
-	if (!discardingOversizedLine) {
-		for (const record of consume(carry + decoder.decode())) yield record;
-		const line = carry.trim();
-		if (line.length > 0 && line.length <= MAX_CARRY_BYTES) {
-			try {
-				yield JSON.parse(line);
-			} catch {
-				// Ignore a truncated final record.
-			}
-		}
-	}
+	if (state.discardingOversizedLine) return;
+	for (const record of consumeLines(state.carry + decoder.decode(), state)) yield record;
+	const finalRecord = parseRecord(state.carry.trim());
+	if (finalRecord !== undefined) yield finalRecord;
 }

@@ -9,6 +9,11 @@ export interface AuditFilter extends AnalyticsWindow {
 	agent?: string;
 	/** Exact working_directory match. */
 	project?: string;
+	tool?: string;
+	classification?: CallClassification;
+	decision?: ApprovalDecision;
+	/** Case-insensitive command substring. */
+	search?: string;
 }
 
 export type DecisionCounts = Record<ApprovalDecision, number>;
@@ -105,6 +110,18 @@ export interface RuleSuggestion {
 	};
 	/** Earlier rules that would preempt this pattern, or historical decisions it would flip. */
 	conflicts: string[];
+	/** Replay-backed projection for additive suggestions. */
+	impact?: {
+		matchingCalls: number;
+		explicitlyCoveredBefore: number;
+		coverageGained: number;
+		before: DecisionCounts;
+		after: DecisionCounts;
+		decisionChanges: number;
+		/** Commands currently falling through without an explicit rule, bounded for transport/UI. */
+		gaps: Array<{ id: number; command: string; decision: ApprovalDecision; classification: CallClassification }>;
+		gapCount: number;
+	};
 }
 
 /** Slim audit row used for session-log cross-referencing. */

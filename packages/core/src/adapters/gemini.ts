@@ -39,9 +39,11 @@ export const geminiAdapter: HookAdapter = {
 		});
 	},
 	install(options) {
-		const isWindows = process.platform === 'win32';
+		const isWindows = options.platform ? options.platform === 'windows' : process.platform === 'win32';
+		const targetPath = isWindows ? path.win32 : path.posix;
+		const targetHome = options.homeDir ?? homedir();
 		const scriptFile = isWindows ? 'hook-gemini.ps1' : 'hook-gemini.sh';
-		const scriptPath = path.join(options.outputDir, scriptFile);
+		const scriptPath = targetPath.join(options.outputDir, scriptFile);
 		const command = isWindows
 			? `powershell.exe -NonInteractive -ExecutionPolicy Bypass -File "${scriptPath}"`
 			: scriptPath;
@@ -58,7 +60,7 @@ export const geminiAdapter: HookAdapter = {
 			],
 			config: {
 				fileName: 'gemini.json',
-				settingsPath: path.join(homedir(), '.gemini', 'settings.json'),
+				settingsPath: targetPath.join(targetHome, '.gemini', 'settings.json'),
 				contents: {
 					hooks: {
 						BeforeTool: [

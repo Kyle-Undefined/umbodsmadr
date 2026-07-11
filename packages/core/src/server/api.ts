@@ -27,6 +27,21 @@ export interface ActivityEntry extends AuditEntry {
 
 export type ApprovalPrompt = (call: ToolCall, reason: string) => Promise<ApprovalDecision>;
 
+export interface AuthorizeOptions {
+	/** Per-call host approval UI. Overrides the prompt supplied to createUmbod. */
+	approvalPrompt?: ApprovalPrompt;
+	/** Treat an approve decision as allowed without prompting, while recording the resolution. */
+	bypassApproval?: boolean;
+}
+
+export interface AuthorizationResult {
+	entry: ActivityEntry;
+	/** The policy engine's original decision. */
+	policyDecision: ApprovalDecision;
+	/** The decision after any host approval or bypass has been resolved. */
+	decision: Exclude<ApprovalDecision, 'approve'>;
+}
+
 export interface UmbodOptions {
 	manifest: Manifest;
 	/** Path to the SQLite audit database. Required unless auditLog is provided. */
@@ -47,6 +62,8 @@ export interface Umbod {
 	readonly manifest: Manifest;
 	readonly auditLog: AuditLogStore;
 	evaluate(call: ToolCall): EvaluationResult;
+	/** Evaluate, audit, and fully resolve a tool call for an in-process host. */
+	authorize(call: ToolCall, options?: AuthorizeOptions): Promise<AuthorizationResult>;
 	/** Resolve a pending approval. Returns false if it was already resolved. */
 	resolveApproval(approvalRequestId: number, status: Exclude<ApprovalStatus, 'pending'>): boolean;
 	listPendingApprovals(): ReturnType<AuditLogStore['listPendingApprovals']>;
@@ -84,11 +101,17 @@ function parseIntParam(url: URL, name: string): number | undefined {
 
 /** Reads since/until (ISO or relative like "7d"), agent, and project params. Throws on malformed times. */
 function parseAuditFilter(url: URL): AuditFilter {
+	const classification = url.searchParams.get('classification');
+	const decision = url.searchParams.get('decision');
 	return {
 		since: resolveTimeParam(url.searchParams.get('since') ?? undefined),
 		until: resolveTimeParam(url.searchParams.get('until') ?? undefined),
 		agent: url.searchParams.get('agent') ?? undefined,
 		project: url.searchParams.get('project') ?? undefined,
+		tool: url.searchParams.get('tool') ?? undefined,
+		classification: classification === null ? undefined : (classification as AuditFilter['classification']),
+		decision: decision === null ? undefined : (decision as AuditFilter['decision']),
+		search: url.searchParams.get('search') ?? undefined,
 	};
 }
 
@@ -175,6 +198,30 @@ export function createUmbod(options: UmbodOptions): Umbod {
 
 		// "web" (or no prompt wired up): wait for the DB record to be resolved externally
 		return waitForApprovalResolution(approvalRequestId);
+	}
+
+	async function authorize(call: ToolCall, callOptions: AuthorizeOptions = {}): Promise<AuthorizationResult> {
+		const result = engine.evaluate(call);
+		const entry = publishEntry(call, result);
+		let decision: Exclude<ApprovalDecision, 'approve'>;
+
+		if (result.decision !== 'approve') {
+			decision = result.decision;
+		} else if (!entry.approvalRequestId) {
+			decision = 'block';
+		} else if (callOptions.bypassApproval) {
+			auditLog.resolveApprovalRequest(entry.approvalRequestId, 'approved');
+			decision = 'allow';
+		} else if (callOptions.approvalPrompt) {
+			const prompted = await callOptions.approvalPrompt(call, result.reason);
+			auditLog.resolveApprovalRequest(entry.approvalRequestId, decisionToApprovalStatus(prompted));
+			decision = prompted === 'allow' ? 'allow' : 'block';
+		} else {
+			const resolved = await resolveApprovalDecision(entry.approvalRequestId, call, result.reason);
+			decision = resolved === 'allow' ? 'allow' : 'block';
+		}
+
+		return { entry, policyDecision: result.decision, decision };
 	}
 
 	// ── Route handlers ──────────────────────────────────────────────
@@ -269,11 +316,20 @@ export function createUmbod(options: UmbodOptions): Umbod {
 		return Response.json({ ok: false, error: errorMessage(error) }, { status: 400 });
 	}
 
+	function handleCallExplorer(url: URL, filter: AuditFilter): Response {
+		const pageSize = Math.min(Math.max(parseIntParam(url, 'pageSize') ?? 50, 1), 200);
+		const page = Math.max(parseIntParam(url, 'page') ?? 1, 1);
+		return Response.json(auditLog.listRecentPage(filter, page, pageSize));
+	}
+
 	function handleAnalytics(url: URL): Response | Promise<Response> | undefined {
 		if (!url.pathname.startsWith('/api/analytics/')) return undefined;
 
 		try {
 			const filter = parseAuditFilter(url);
+			if (url.pathname === '/api/analytics/calls') {
+				return handleCallExplorer(url, filter);
+			}
 			if (url.pathname === '/api/analytics/tools') {
 				return Response.json(
 					computeToolUsage(auditLog, manifest, {
@@ -363,6 +419,7 @@ export function createUmbod(options: UmbodOptions): Umbod {
 		manifest,
 		auditLog,
 		evaluate: (call) => engine.evaluate(call),
+		authorize,
 		resolveApproval: (approvalRequestId, status) => auditLog.resolveApprovalRequest(approvalRequestId, status),
 		listPendingApprovals,
 		fetch: handleFetch,

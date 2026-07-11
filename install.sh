@@ -91,6 +91,7 @@ fi
 
 chmod +x "$BINARY_TMP_PATH"
 move_into_place "$BINARY_TMP_PATH" "$INSTALL_DIR/$BINARY"
+chmod 755 "$INSTALL_DIR/$BINARY"
 echo "[umbod] Verified checksum for $INSTALL_DIR/$BINARY"
 
 # ─── Done ─────────────────────────────────────────────────────────────────────

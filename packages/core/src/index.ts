@@ -1,12 +1,20 @@
 export * from './core/types.ts';
 
 export { createUmbod } from './server/api.ts';
-export type { ActivityEntry, ApprovalPrompt, Umbod, UmbodOptions } from './server/api.ts';
+export type {
+	ActivityEntry,
+	ApprovalPrompt,
+	AuthorizationResult,
+	AuthorizeOptions,
+	Umbod,
+	UmbodOptions,
+} from './server/api.ts';
 
 export { AuditLogStore } from './db/audit-log.ts';
 export { PolicyEngine } from './policy/engine.ts';
 export { classifyToolCall } from './policy/classifier.ts';
-export { loadManifest } from './config/manifest.ts';
+export { createDefaultManifestSource, loadManifest } from './config/manifest.ts';
+export type { DefaultManifestOptions } from './config/manifest.ts';
 export { runConfigureCommand } from './configure.ts';
 export { adapters, findAdapterById, selectAdapters } from './adapters/index.ts';
 export type { HookAdapter, HookInstallOptions, HookInstallResult } from './adapters/base.ts';

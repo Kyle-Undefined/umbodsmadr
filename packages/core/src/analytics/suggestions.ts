@@ -14,6 +14,7 @@ export interface SuggestRulesOptions extends AuditFilter {
 const DEFAULT_MIN_OCCURRENCES = 5;
 const PURITY_THRESHOLD = 0.9;
 const SAMPLE_LIMIT = 3;
+const GAP_SAMPLE_LIMIT = 50;
 
 /** Commands whose first two tokens form the natural rule prefix ("git push", "npm run", ...). */
 const MULTIWORD_COMMANDS = new Set([
@@ -37,6 +38,36 @@ interface Cluster {
 	denied: number;
 	destructive: number;
 	commands: Set<string>;
+}
+
+function projectImpact(
+	entries: AuditEntry[],
+	pattern: string,
+	decision: 'allow' | 'block'
+): NonNullable<RuleSuggestion['impact']> {
+	const matchingCalls = entries.filter((entry) =>
+		ruleMatchCandidates(entry).some((candidate) => matchesPattern(candidate, pattern))
+	);
+	const gaps = matchingCalls.filter((entry) => entry.matchedRule === undefined);
+	const before = { allow: 0, block: 0, approve: 0 };
+	for (const entry of matchingCalls) before[entry.decision] += 1;
+	const after = { allow: 0, block: 0, approve: 0 };
+	after[decision] = matchingCalls.length;
+	return {
+		matchingCalls: matchingCalls.length,
+		explicitlyCoveredBefore: matchingCalls.length - gaps.length,
+		coverageGained: gaps.length,
+		before,
+		after,
+		decisionChanges: matchingCalls.filter((entry) => entry.decision !== decision).length,
+		gaps: gaps.slice(0, GAP_SAMPLE_LIMIT).map((entry, index) => ({
+			id: entry.id ?? -(index + 1),
+			command: entry.command,
+			decision: entry.decision,
+			classification: entry.classification,
+		})),
+		gapCount: gaps.length,
+	};
 }
 
 /** Derives the candidate rule pattern a tool call would cluster under. */
@@ -64,6 +95,7 @@ export function clusterKey(entry: AuditEntry): string | undefined {
 	return undefined;
 }
 
+// fallow-ignore-next-line complexity -- staged mining, safety validation, and replay projection pipeline
 export function suggestRules(
 	manifest: Manifest,
 	auditLog: AuditLogStore,
@@ -103,6 +135,7 @@ export function suggestRules(
 	const blockedEntries = auditLog
 		.listRecentFiltered(filter, replayLimit)
 		.filter((entry) => entry.decision === 'block' || entry.approvalStatus === 'denied');
+	const replayEntries = auditLog.listRecentFiltered(filter, replayLimit);
 
 	const suggestions: RuleSuggestion[] = [];
 
@@ -181,6 +214,7 @@ export function suggestRules(
 				sampleCommands: [...cluster.commands].slice(0, SAMPLE_LIMIT),
 			},
 			conflicts,
+			impact: projectImpact(replayEntries, cluster.pattern, decision),
 		});
 	}
 

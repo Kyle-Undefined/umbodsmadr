@@ -1,6 +1,6 @@
 {
 	"name": "umbod",
-	"version": "0.0.8",
+	"version": "0.0.9",
 	"private": true,
 	"type": "module",
 	"description": "The arbiter of policy within the autonomous realm.",

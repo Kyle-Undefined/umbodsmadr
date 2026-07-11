@@ -2,7 +2,7 @@ import { homedir } from 'node:os';
 import path from 'node:path';
 
 import type { HookAdapter } from './base.ts';
-import { normalizePayload } from '../hooks/adapter-utils.ts';
+import { buildCurlWrapperScript, buildPowerShellWrapperScript, normalizePayload } from '../hooks/adapter-utils.ts';
 
 export const claudeAdapter: HookAdapter = {
 	id: 'claude',
@@ -20,11 +20,27 @@ export const claudeAdapter: HookAdapter = {
 		});
 	},
 	install(options) {
+		const isWindows = options.platform ? options.platform === 'windows' : process.platform === 'win32';
+		const targetPath = isWindows ? path.win32 : path.posix;
+		const targetHome = options.homeDir ?? homedir();
+		const scriptFile = isWindows ? 'hook-claude.ps1' : 'hook-claude.sh';
+		const scriptPath = targetPath.join(options.outputDir, scriptFile);
+		const command = isWindows
+			? `powershell.exe -NonInteractive -ExecutionPolicy Bypass -File "${scriptPath}"`
+			: scriptPath;
 		return {
-			assets: [],
+			assets: [
+				{
+					relativePath: scriptFile,
+					contents: isWindows
+						? buildPowerShellWrapperScript(options.url, 'claude', 'codex')
+						: buildCurlWrapperScript(options.url, 'claude', 'codex'),
+					executable: !isWindows,
+				},
+			],
 			config: {
 				fileName: 'claude.json',
-				settingsPath: path.join(homedir(), '.claude', 'settings.json'),
+				settingsPath: targetPath.join(targetHome, '.claude', 'settings.json'),
 				contents: {
 					hooks: {
 						PreToolUse: [
@@ -32,11 +48,10 @@ export const claudeAdapter: HookAdapter = {
 								matcher: '*',
 								hooks: [
 									{
-										type: 'http',
-										url: `${options.url.replace(/\/+$/, '')}/api/hooks`,
-										headers: {
-											'x-umbod-agent': 'claude',
-										},
+										type: 'command',
+										command,
+										timeout: options.timeoutSeconds,
+										statusMessage: 'Checking umbod policy',
 										failClosed: true,
 									},
 								],

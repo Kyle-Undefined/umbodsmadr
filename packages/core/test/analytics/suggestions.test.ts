@@ -82,6 +82,16 @@ describe('analytics > rule suggestions', () => {
 		expect(suggestion?.kind).toBe('promote-approved');
 		expect(suggestion?.evidence.occurrences).toBe(5);
 		expect(suggestion?.evidence.approvedCount).toBe(5);
+		expect(suggestion?.impact).toMatchObject({
+			matchingCalls: 5,
+			explicitlyCoveredBefore: 0,
+			coverageGained: 5,
+			before: { allow: 0, block: 0, approve: 5 },
+			after: { allow: 5, block: 0, approve: 0 },
+			decisionChanges: 5,
+			gapCount: 5,
+		});
+		expect(suggestion?.impact?.gaps).toHaveLength(5);
 	});
 
 	test('suggests block for consistently denied clusters', () => {

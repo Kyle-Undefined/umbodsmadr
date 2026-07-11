@@ -1,5 +1,5 @@
 import { describe, expect, test, beforeEach, afterEach } from 'bun:test';
-import { loadManifest } from '../../src/config/manifest.ts';
+import { createDefaultManifestSource, loadManifest } from '../../src/config/manifest.ts';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -19,6 +19,38 @@ function writeToml(content: string): string {
 	writeFileSync(filePath, content);
 	return filePath;
 }
+
+describe('createDefaultManifestSource', () => {
+	test('renders a valid Umbod starter manifest', async () => {
+		const path = writeToml(createDefaultManifestSource());
+		const manifest = await loadManifest(path);
+
+		expect(manifest.env).toEqual({ name: 'dev', version: '1.0.0', timeout: 30 });
+		expect(manifest.policy).toEqual({ default_unknown: 'block', approval_method: 'web' });
+		expect(manifest.rules['git push *']).toBe('approve');
+		expect(manifest.rules['/(^|\\/)\\.[^\\s\\/]+/']).toBe('block');
+	});
+
+	test('supports host-specific environment and approval defaults', async () => {
+		const path = writeToml(
+			createDefaultManifestSource({
+				name: 'hlid',
+				version: '2.0.0',
+				timeout: 300,
+				defaultUnknown: 'approve',
+				approvalMethod: 'cli',
+			})
+		);
+		const manifest = await loadManifest(path);
+
+		expect(manifest.env).toEqual({ name: 'hlid', version: '2.0.0', timeout: 300 });
+		expect(manifest.policy).toEqual({ default_unknown: 'approve', approval_method: 'cli' });
+	});
+
+	test('rejects an invalid timeout', () => {
+		expect(() => createDefaultManifestSource({ timeout: -1 })).toThrow('non-negative');
+	});
+});
 
 // ── Valid manifests ──────────────────────────────────────────
 

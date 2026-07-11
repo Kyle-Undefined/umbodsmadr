@@ -16,6 +16,10 @@ export interface HookInstallOptions {
 	url: string;
 	outputDir: string;
 	timeoutSeconds: number;
+	/** Override artifact style when a host generates hooks for another OS. */
+	platform?: 'posix' | 'windows';
+	/** Override the target user's home directory in generated settings paths. */
+	homeDir?: string;
 }
 
 export interface HookInstallResult {

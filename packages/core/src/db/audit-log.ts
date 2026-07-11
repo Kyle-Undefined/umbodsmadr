@@ -172,7 +172,7 @@ export class AuditLogStore {
 		return rows.map(rowToAuditEntryWithApproval);
 	}
 
-	listRecentFiltered(filter: AuditFilter = {}, limit = 2000): AuditEntry[] {
+	listRecentFiltered(filter: AuditFilter = {}, limit = 2000, offset = 0): AuditEntry[] {
 		const { where, params } = this.buildFilter(filter, 'al');
 		const rows = this.database
 			.query(
@@ -184,11 +184,30 @@ export class AuditLogStore {
          LEFT JOIN approval_requests ar ON ar.audit_log_id = al.id
          ${where}
          ORDER BY al.id DESC
-         LIMIT ?`
+         LIMIT ? OFFSET ?`
 			)
-			.all(...params, limit) as Array<Record<string, unknown>>;
+			.all(...params, limit, offset) as Array<Record<string, unknown>>;
 
 		return rows.map(rowToAuditEntryWithApproval);
+	}
+
+	// fallow-ignore-next-line unused-class-member -- called by the embedded analytics API
+	listRecentPage(
+		filter: AuditFilter,
+		page: number,
+		pageSize: number
+	): { entries: AuditEntry[]; page: number; pageSize: number; total: number; totalPages: number } {
+		const { where, params } = this.buildFilter(filter);
+		const row = this.database.query(`SELECT COUNT(*) AS count FROM audit_log ${where}`).get(...params) as {
+			count: number;
+		};
+		return {
+			entries: this.listRecentFiltered(filter, pageSize, (page - 1) * pageSize),
+			page,
+			pageSize,
+			total: row.count,
+			totalPages: Math.max(Math.ceil(row.count / pageSize), 1),
+		};
 	}
 
 	listPendingApprovals(limit = 50): ApprovalRequest[] {
@@ -222,22 +241,23 @@ export class AuditLogStore {
 		const prefix = alias.length > 0 ? `${alias}.` : '';
 		const clauses: string[] = [];
 		const params: (string | number)[] = [];
-
-		if (filter.since !== undefined) {
-			clauses.push(`${prefix}timestamp >= ?`);
-			params.push(filter.since);
+		const comparisons: Array<[column: string, operator: string, value: string | undefined]> = [
+			['timestamp', '>=', filter.since],
+			['timestamp', '<=', filter.until],
+			['agent', '=', filter.agent],
+			['working_directory', '=', filter.project],
+			['tool', '=', filter.tool],
+			['classification', '=', filter.classification],
+			['decision', '=', filter.decision],
+		];
+		for (const [column, operator, value] of comparisons) {
+			if (value === undefined) continue;
+			clauses.push(`${prefix}${column} ${operator} ?`);
+			params.push(value);
 		}
-		if (filter.until !== undefined) {
-			clauses.push(`${prefix}timestamp <= ?`);
-			params.push(filter.until);
-		}
-		if (filter.agent !== undefined) {
-			clauses.push(`${prefix}agent = ?`);
-			params.push(filter.agent);
-		}
-		if (filter.project !== undefined) {
-			clauses.push(`${prefix}working_directory = ?`);
-			params.push(filter.project);
+		if (filter.search !== undefined) {
+			clauses.push(`${prefix}command LIKE ?`);
+			params.push(`%${filter.search}%`);
 		}
 
 		return { where: clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : '', params };

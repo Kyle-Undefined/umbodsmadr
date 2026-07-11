@@ -113,7 +113,11 @@ function buildCurlPreamble(url: string, agent: string): string {
 	return `#!/usr/bin/env sh
 set -eu
 R=$(mktemp) && trap 'rm -f "$R"' EXIT
-C=$(curl -sS -o "$R" -w '%{http_code}' --connect-timeout 5 \\
+CURL=curl
+if [ -x /mnt/c/Windows/System32/curl.exe ] && grep -qi microsoft /proc/sys/kernel/osrelease 2>/dev/null; then
+  CURL=/mnt/c/Windows/System32/curl.exe
+fi
+C=$("$CURL" -sS -o "$R" -w '%{http_code}' --connect-timeout 5 \\
   -X POST ${shellQuote(url)} \\
   -H 'content-type: application/json' \\
   -H ${shellQuote('x-umbod-agent: ' + agent)} \\

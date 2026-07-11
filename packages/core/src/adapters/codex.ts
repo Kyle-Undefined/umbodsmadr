@@ -48,9 +48,11 @@ export const codexAdapter: HookAdapter = {
 		});
 	},
 	install(options) {
-		const isWindows = process.platform === 'win32';
+		const isWindows = options.platform ? options.platform === 'windows' : process.platform === 'win32';
+		const targetPath = isWindows ? path.win32 : path.posix;
+		const targetHome = options.homeDir ?? homedir();
 		const scriptFile = isWindows ? 'hook-codex.ps1' : 'hook-codex.sh';
-		const scriptPath = path.join(options.outputDir, scriptFile);
+		const scriptPath = targetPath.join(options.outputDir, scriptFile);
 		const timeoutSeconds = options.timeoutSeconds === 0 ? DISABLED_TIMEOUT_FALLBACK_SECONDS : options.timeoutSeconds;
 		const command = isWindows
 			? `powershell.exe -NonInteractive -ExecutionPolicy Bypass -File "${scriptPath}"`
@@ -68,7 +70,7 @@ export const codexAdapter: HookAdapter = {
 			],
 			config: {
 				fileName: 'codex.toml',
-				settingsPath: path.join(homedir(), '.codex', 'config.toml'),
+				settingsPath: targetPath.join(targetHome, '.codex', 'config.toml'),
 				contents:
 					`[[hooks.PreToolUse]]\n` +
 					`matcher = "*"\n\n` +

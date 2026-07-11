@@ -69,13 +69,15 @@ describe('claude adapter', () => {
 		expect(call.command).toBe('read /tmp/file.txt');
 	});
 
-	test('install returns HTTP hook config', () => {
+	test('install returns a WSL-aware command hook config', () => {
 		const result = claudeAdapter.install({
 			url: 'http://127.0.0.1:9090',
 			outputDir: '/tmp/umbod',
 			timeoutSeconds: 30,
 		});
-		expect(result.assets).toHaveLength(0); // Claude uses HTTP, no wrapper script
+		expect(result.assets).toHaveLength(1);
+		expect(result.assets[0].relativePath).toBe('hook-claude.sh');
+		expect(result.assets[0].contents).toContain('/mnt/c/Windows/System32/curl.exe');
 		expect(typeof result.config.contents).toBe('object');
 		expect(result.config.contents).toHaveProperty('hooks');
 		const hooks = (result.config.contents as Record<string, unknown>).hooks as Record<string, unknown>;
@@ -270,6 +272,20 @@ describe('adapter install', () => {
 			expect(result.config.fileName).toBeDefined();
 			expect(result.config.settingsPath).toBeDefined();
 			expect(['object', 'string']).toContain(typeof result.config.contents);
+		});
+
+		test(`${adapter.id} can generate POSIX artifacts from a Windows host`, () => {
+			const result = adapter.install({
+				url: 'http://127.0.0.1:9090',
+				outputDir: '~/.umbod',
+				timeoutSeconds: 30,
+				platform: 'posix',
+				homeDir: '~',
+			});
+			expect(result.assets[0]?.relativePath).toEndWith('.sh');
+			expect(result.assets[0]?.contents).toStartWith('#!/usr/bin/env sh');
+			expect(JSON.stringify(result.config.contents)).toContain('~/.umbod/');
+			expect(result.config.settingsPath).not.toContain('\\');
 		});
 	}
 });
