@@ -14,6 +14,21 @@ import { MIGRATIONS, SCHEMA, SCHEMA_VERSION } from './schema.ts';
 const VALID_DECISIONS = new Set<string>(['allow', 'block', 'approve']);
 const VALID_CLASSIFICATIONS = new Set<string>(['readonly', 'destructive', 'external', 'stateful', 'unknown']);
 
+function finiteNumber(value: unknown, label: string): number {
+	const number = Number(value);
+	if (!Number.isFinite(number)) throw new Error(`invalid ${label}: ${String(value)}`);
+	return number;
+}
+
+function enumValue<T extends string>(value: unknown, valid: Set<string>, label: string): T {
+	if (typeof value !== 'string' || !valid.has(value)) throw new Error(`invalid ${label}: ${String(value)}`);
+	return value as T;
+}
+
+function optionalString(value: unknown): string | undefined {
+	return value === null || value === undefined ? undefined : String(value);
+}
+
 function safeJsonParse<T>(value: unknown, fallback: T): T {
 	if (typeof value !== 'string') {
 		return fallback;
@@ -28,38 +43,31 @@ function safeJsonParse<T>(value: unknown, fallback: T): T {
 
 function rowToAuditEntry(row: Record<string, unknown>): AuditEntry {
 	const rawId = row.id ?? row.audit_log_id;
-	if (rawId === undefined || rawId === null) {
-		throw new Error('missing id in audit log row');
-	}
-
-	const id = Number(rawId);
-	if (!Number.isFinite(id)) {
-		throw new Error(`invalid audit log row id: ${String(rawId)}`);
-	}
-
-	if (typeof row.decision !== 'string' || !VALID_DECISIONS.has(row.decision)) {
-		throw new Error(`invalid decision in audit log row: ${String(row.decision)}`);
-	}
-
-	if (typeof row.classification !== 'string' || !VALID_CLASSIFICATIONS.has(row.classification)) {
-		throw new Error(`invalid classification in audit log row: ${String(row.classification)}`);
-	}
+	if (rawId === undefined || rawId === null) throw new Error('missing id in audit log row');
 
 	return {
-		id,
+		id: finiteNumber(rawId, 'audit log row id'),
 		agent: String(row.agent),
 		tool: String(row.tool),
 		command: String(row.command),
 		args: safeJsonParse<string[]>(row.args_json, []),
-		workingDirectory: row.working_directory === null ? undefined : String(row.working_directory),
+		workingDirectory: optionalString(row.working_directory),
 		inputs: safeJsonParse<Record<string, unknown>>(row.inputs_json, {}),
 		timestamp: String(row.timestamp),
-		decision: row.decision as AuditEntry['decision'],
-		classification: row.classification as AuditEntry['classification'],
-		matchedRule: row.matched_rule === null ? undefined : String(row.matched_rule),
+		decision: enumValue(row.decision, VALID_DECISIONS, 'decision in audit log row'),
+		classification: enumValue(row.classification, VALID_CLASSIFICATIONS, 'classification in audit log row'),
+		matchedRule: optionalString(row.matched_rule),
 		reason: String(row.reason),
-		sessionId: row.session_id === null || row.session_id === undefined ? undefined : String(row.session_id),
-		toolUseId: row.tool_use_id === null || row.tool_use_id === undefined ? undefined : String(row.tool_use_id),
+		sessionId: optionalString(row.session_id),
+		toolUseId: optionalString(row.tool_use_id),
+	};
+}
+
+function rowToAuditEntryWithApproval(row: Record<string, unknown>): AuditEntry {
+	return {
+		...rowToAuditEntry(row),
+		approvalStatus: optionalString(row.approval_status) as ApprovalStatus | undefined,
+		approvalResolvedAt: optionalString(row.approval_resolved_at),
 	};
 }
 
@@ -161,11 +169,7 @@ export class AuditLogStore {
 			Record<string, unknown>
 		>;
 
-		return rows.map((row) => ({
-			...rowToAuditEntry(row),
-			approvalStatus: row.approval_status === null ? undefined : (String(row.approval_status) as ApprovalStatus),
-			approvalResolvedAt: row.approval_resolved_at === null ? undefined : String(row.approval_resolved_at),
-		}));
+		return rows.map(rowToAuditEntryWithApproval);
 	}
 
 	listRecentFiltered(filter: AuditFilter = {}, limit = 2000): AuditEntry[] {
@@ -184,11 +188,7 @@ export class AuditLogStore {
 			)
 			.all(...params, limit) as Array<Record<string, unknown>>;
 
-		return rows.map((row) => ({
-			...rowToAuditEntry(row),
-			approvalStatus: row.approval_status === null ? undefined : (String(row.approval_status) as ApprovalStatus),
-			approvalResolvedAt: row.approval_resolved_at === null ? undefined : String(row.approval_resolved_at),
-		}));
+		return rows.map(rowToAuditEntryWithApproval);
 	}
 
 	listPendingApprovals(limit = 50): ApprovalRequest[] {
@@ -243,6 +243,16 @@ export class AuditLogStore {
 		return { where: clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : '', params };
 	}
 
+	private filteredRows(
+		filter: AuditFilter,
+		buildSql: (where: string) => string,
+		alias = '',
+		extraParams: Array<string | number> = []
+	): Array<Record<string, unknown>> {
+		const { where, params } = this.buildFilter(filter, alias);
+		return this.database.query(buildSql(where)).all(...params, ...extraParams) as Array<Record<string, unknown>>;
+	}
+
 	usageTotals(filter: AuditFilter = {}): { entries: number; sessions: number; agents: string[]; projects: string[] } {
 		const { where, params } = this.buildFilter(filter);
 		const row = this.database
@@ -269,10 +279,9 @@ export class AuditLogStore {
 	}
 
 	aggregateToolUsage(filter: AuditFilter = {}): Array<Omit<ToolUsageRow, 'topCommands'>> {
-		const { where, params } = this.buildFilter(filter);
-		const rows = this.database
-			.query(
-				`SELECT agent, tool, COUNT(*) AS count,
+		const rows = this.filteredRows(
+			filter,
+			(where) => `SELECT agent, tool, COUNT(*) AS count,
                 SUM(CASE WHEN decision = 'allow' THEN 1 ELSE 0 END) AS allow_count,
                 SUM(CASE WHEN decision = 'block' THEN 1 ELSE 0 END) AS block_count,
                 SUM(CASE WHEN decision = 'approve' THEN 1 ELSE 0 END) AS approve_count,
@@ -285,8 +294,7 @@ export class AuditLogStore {
          FROM audit_log ${where}
          GROUP BY agent, tool
          ORDER BY count DESC`
-			)
-			.all(...params) as Array<Record<string, unknown>>;
+		);
 
 		return rows.map((row) => {
 			const classifications: ToolUsageRow['classifications'] = {};
@@ -339,18 +347,16 @@ export class AuditLogStore {
 	}
 
 	aggregateTaskTypes(filter: AuditFilter = {}): TaskTypeRow[] {
-		const { where, params } = this.buildFilter(filter);
-		const rows = this.database
-			.query(
-				`SELECT working_directory, classification, COUNT(*) AS count,
+		const rows = this.filteredRows(
+			filter,
+			(where) => `SELECT working_directory, classification, COUNT(*) AS count,
                 SUM(CASE WHEN decision = 'allow' THEN 1 ELSE 0 END) AS allow_count,
                 SUM(CASE WHEN decision = 'block' THEN 1 ELSE 0 END) AS block_count,
                 SUM(CASE WHEN decision = 'approve' THEN 1 ELSE 0 END) AS approve_count
          FROM audit_log ${where}
          GROUP BY working_directory, classification
          ORDER BY count DESC`
-			)
-			.all(...params) as Array<Record<string, unknown>>;
+		);
 
 		return rows.map((row) => ({
 			workingDirectory: row.working_directory === null ? null : String(row.working_directory),
@@ -445,22 +451,16 @@ export class AuditLogStore {
 			)
 			.all(...params, limit) as Array<Record<string, unknown>>;
 
-		return rows.map((row) => ({
-			...rowToAuditEntry(row),
-			approvalStatus: row.approval_status === null ? undefined : (String(row.approval_status) as ApprovalStatus),
-			approvalResolvedAt: row.approval_resolved_at === null ? undefined : String(row.approval_resolved_at),
-		}));
+		return rows.map(rowToAuditEntryWithApproval);
 	}
 
 	entriesForCoverage(filter: AuditFilter = {}): CoverageAuditRow[] {
-		const { where, params } = this.buildFilter(filter);
-		const rows = this.database
-			.query(
-				`SELECT id, agent, tool, command, timestamp, session_id, tool_use_id, working_directory
+		const rows = this.filteredRows(
+			filter,
+			(where) => `SELECT id, agent, tool, command, timestamp, session_id, tool_use_id, working_directory
          FROM audit_log ${where}
          ORDER BY timestamp`
-			)
-			.all(...params) as Array<Record<string, unknown>>;
+		);
 
 		return rows.map((row) => ({
 			id: Number(row.id),

@@ -146,10 +146,7 @@ describe('analytics > rule suggestions', () => {
 
 	test('limits conflict replay to the requested project', () => {
 		for (let i = 0; i < 5; i += 1) {
-			recordApproval(
-				{ command: `git push origin branch-${i}`, workingDirectory: '/work/current' },
-				'approved'
-			);
+			recordApproval({ command: `git push origin branch-${i}`, workingDirectory: '/work/current' }, 'approved');
 		}
 		store.append(makeCall({ command: 'git push --force origin main', workingDirectory: '/work/other' }), {
 			decision: 'block',

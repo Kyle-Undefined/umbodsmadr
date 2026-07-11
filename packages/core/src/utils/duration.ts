@@ -8,7 +8,7 @@ const UNIT_MS: Record<string, number> = {
 };
 
 /** Parses a relative duration like "30m", "24h", "7d", "2w" into milliseconds. */
-export function parseDuration(value: string): number | undefined {
+function parseDuration(value: string): number | undefined {
 	const match = RELATIVE_RE.exec(value.trim());
 	if (!match) return undefined;
 	return Number(match[1]) * (UNIT_MS[match[2]] as number);

@@ -9,4 +9,4 @@ export async function* readSessionToolCalls(sources: SessionLogSource[]): AsyncG
 	}
 }
 
-export type { SessionAgent, SessionLogSource, SessionToolCall } from './types.ts';
+export type { SessionLogSource, SessionToolCall } from './types.ts';

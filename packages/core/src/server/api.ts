@@ -265,92 +265,97 @@ export function createUmbod(options: UmbodOptions): Umbod {
 		}
 	}
 
-	function handleFetch(req: Request): Response | Promise<Response> | undefined {
-		const url = new URL(req.url);
+	function analyticsError(error: unknown): Response {
+		return Response.json({ ok: false, error: errorMessage(error) }, { status: 400 });
+	}
 
-		if (req.method === 'GET' && url.pathname === '/health') {
+	function handleAnalytics(url: URL): Response | Promise<Response> | undefined {
+		if (!url.pathname.startsWith('/api/analytics/')) return undefined;
+
+		try {
+			const filter = parseAuditFilter(url);
+			if (url.pathname === '/api/analytics/tools') {
+				return Response.json(
+					computeToolUsage(auditLog, manifest, {
+						...filter,
+						recentWindowDays: parseIntParam(url, 'recentDays'),
+						topCommandsPerTool: parseIntParam(url, 'topCommands'),
+					})
+				);
+			}
+			if (url.pathname === '/api/analytics/rules') {
+				return Response.json(
+					analyzeRules(manifest, auditLog, {
+						...filter,
+						minOccurrences: parseIntParam(url, 'minOccurrences'),
+					})
+				);
+			}
+			if (url.pathname !== '/api/analytics/coverage') return undefined;
+
+			const since = filter.since ?? new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+			const sources = sessionLogSources
+				.filter((source) => filter.agent === undefined || source.agent === filter.agent)
+				.map((source) => ({
+					...source,
+					since,
+					until: filter.until ?? source.until,
+					project: filter.project ?? source.project,
+				}));
+			return computeCoverage(auditLog, sources, {
+				...filter,
+				since,
+				heuristicWindowMs: parseIntParam(url, 'heuristicWindowMs'),
+				gapLimit: parseIntParam(url, 'gapLimit'),
+			})
+				.then((report) => Response.json(report))
+				.catch(analyticsError);
+		} catch (error: unknown) {
+			return analyticsError(error);
+		}
+	}
+
+	function handleGet(url: URL): Response | Promise<Response> | undefined {
+		if (url.pathname === '/health') {
 			return handleHealth();
 		}
 
-		if (req.method === 'GET' && url.pathname === '/api/activity') {
+		if (url.pathname === '/api/activity') {
 			return Response.json(auditLog.listRecent(parseLimitParam(url)));
 		}
 
-		if (req.method === 'GET' && url.pathname === '/api/approvals') {
+		if (url.pathname === '/api/approvals') {
 			return Response.json(listPendingApprovals());
 		}
 
-		if (req.method === 'GET' && url.pathname === '/api/manifest') {
+		if (url.pathname === '/api/manifest') {
 			return handleManifest();
 		}
 
-		if (req.method === 'GET' && url.pathname === '/api/analytics/tools') {
-			try {
-				const filter = parseAuditFilter(url);
-				const stats = computeToolUsage(auditLog, manifest, {
-					...filter,
-					recentWindowDays: parseIntParam(url, 'recentDays'),
-					topCommandsPerTool: parseIntParam(url, 'topCommands'),
-				});
-				return Response.json(stats);
-			} catch (error: unknown) {
-				return Response.json({ ok: false, error: errorMessage(error) }, { status: 400 });
-			}
-		}
+		return handleAnalytics(url);
+	}
 
-		if (req.method === 'GET' && url.pathname === '/api/analytics/rules') {
-			try {
-				const filter = parseAuditFilter(url);
-				const analysis = analyzeRules(manifest, auditLog, {
-					...filter,
-					minOccurrences: parseIntParam(url, 'minOccurrences'),
-				});
-				return Response.json(analysis);
-			} catch (error: unknown) {
-				return Response.json({ ok: false, error: errorMessage(error) }, { status: 400 });
-			}
-		}
-
-		if (req.method === 'GET' && url.pathname === '/api/analytics/coverage') {
-			try {
-				const filter = parseAuditFilter(url);
-				const since = filter.since ?? new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-				const sources = sessionLogSources
-					.filter((source) => filter.agent === undefined || source.agent === filter.agent)
-					.map((source) => ({
-						...source,
-						since,
-						until: filter.until ?? source.until,
-						project: filter.project ?? source.project,
-					}));
-				return computeCoverage(auditLog, sources, {
-					...filter,
-					since,
-					heuristicWindowMs: parseIntParam(url, 'heuristicWindowMs'),
-					gapLimit: parseIntParam(url, 'gapLimit'),
-				})
-					.then((report) => Response.json(report))
-					.catch((error: unknown) =>
-						Response.json({ ok: false, error: errorMessage(error) }, { status: 400 })
-					);
-			} catch (error: unknown) {
-				return Response.json({ ok: false, error: errorMessage(error) }, { status: 400 });
-			}
-		}
-
+	function handlePost(req: Request, url: URL): Response | Promise<Response> | undefined {
 		const approvalMatch = url.pathname.match(/^\/api\/approvals\/(\d+)\/(approve|deny)$/);
-		if (req.method === 'POST' && approvalMatch) {
+		if (approvalMatch) {
 			return handleApprovalAction(Number(approvalMatch[1]), approvalMatch[2]);
 		}
 
-		if (req.method === 'POST' && url.pathname === '/api/evaluate') {
+		if (url.pathname === '/api/evaluate') {
 			return handleEvaluate(req);
 		}
 
-		if (req.method === 'POST' && url.pathname === '/api/hooks') {
+		if (url.pathname === '/api/hooks') {
 			return handleHook(req, url);
 		}
 
+		return undefined;
+	}
+
+	function handleFetch(req: Request): Response | Promise<Response> | undefined {
+		const url = new URL(req.url);
+		if (req.method === 'GET') return handleGet(url);
+		if (req.method === 'POST') return handlePost(req, url);
 		return undefined;
 	}
 
