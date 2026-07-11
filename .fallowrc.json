@@ -1,7 +1,7 @@
 {
 	// This file is JSONC: fallow reads these comments; generic JSON tools may not.
 	"$schema": "https://raw.githubusercontent.com/fallow-rs/fallow/main/schema.json",
-	"entry": ["src/index.{ts,tsx,js,jsx}", "src/main.{ts,tsx,js,jsx}"],
+	"entry": ["src/index.{ts,tsx,js,jsx}", "src/main.{ts,tsx,js,jsx}", "bump.config.ts"],
 	"workspaces": {
 		"patterns": ["packages/*"]
 	},

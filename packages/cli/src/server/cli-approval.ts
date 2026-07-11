@@ -52,6 +52,7 @@ export class CliApprovalQueue {
 	private readonly queue: QueueItem[] = [];
 	private processing = false;
 
+	// fallow-ignore-next-line unused-class-member -- passed to core as the CLI approval callback
 	async request(call: ToolCall, reason: string): Promise<ApprovalDecision> {
 		return new Promise((resolve) => {
 			this.queue.push({ call, reason, resolve });
