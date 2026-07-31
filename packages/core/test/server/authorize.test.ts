@@ -38,6 +38,25 @@ describe('in-process authorization', () => {
 		umbod.close();
 	});
 
+	test('persists the same scope for an unresolved workspace fail-closed result', async () => {
+		const umbod = makeUmbod({});
+		const result = await umbod.authorize({
+			...call,
+			agent: 'host',
+			command: 'git status',
+			workingDirectory: '/other',
+			workspaceId: 'missing',
+		});
+
+		expect(result.entry).toMatchObject({ decision: 'block', policyScope: 'global' });
+		expect(umbod.auditLog.listRecent(1)[0]).toMatchObject({
+			decision: 'block',
+			policyScope: 'global',
+			workspaceId: 'missing',
+		});
+		umbod.close();
+	});
+
 	test('records host approval outcomes', async () => {
 		const umbod = makeUmbod({ 'git push *': 'approve' });
 		const result = await umbod.authorize(call, { approvalPrompt: async () => 'allow' });

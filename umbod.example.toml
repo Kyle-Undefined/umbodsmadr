@@ -22,3 +22,22 @@ approval_method = "both" # web | cli | both
 "git clean -fd*" = "approve"
 
 "git status" = "allow"
+
+# Workspaces are generic named policy scopes. Hosts may send workspaceId
+# directly; otherwise Umbod selects the longest matching working-directory root.
+[[workspaces]]
+id = "client-production"
+roots = ["/work/client-app", "C:\\work\\client-app"]
+default_unknown = "block"
+
+[workspaces.rules]
+"git push *" = "block"
+"terraform plan *" = "approve"
+
+[[workspaces]]
+id = "personal-sandbox"
+roots = ["/work/sandbox"]
+default_unknown = "allow"
+
+[workspaces.rules]
+"git push origin scratch" = "allow"

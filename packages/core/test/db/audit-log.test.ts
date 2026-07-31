@@ -72,12 +72,15 @@ describe('audit log > append', () => {
 				command: 'rm -rf /tmp',
 				args: ['--verbose'],
 				workingDirectory: '/home/user',
+				workspaceId: 'client',
 				inputs: { key: 'value' },
 			}),
 			makeResult({
 				decision: 'block',
 				classification: 'destructive',
 				matchedRule: 'rm *',
+				policyScope: 'workspace',
+				resolvedWorkspaceId: 'client',
 				reason: 'matched rule "rm *"',
 			})
 		);
@@ -90,10 +93,13 @@ describe('audit log > append', () => {
 		expect(entry.command).toBe('rm -rf /tmp');
 		expect(entry.args).toEqual(['--verbose']);
 		expect(entry.workingDirectory).toBe('/home/user');
+		expect(entry.workspaceId).toBe('client');
 		expect(entry.inputs).toEqual({ key: 'value' });
 		expect(entry.decision).toBe('block');
 		expect(entry.classification).toBe('destructive');
 		expect(entry.matchedRule).toBe('rm *');
+		expect(entry.policyScope).toBe('workspace');
+		expect(entry.resolvedWorkspaceId).toBe('client');
 		expect(entry.reason).toBe('matched rule "rm *"');
 	});
 });

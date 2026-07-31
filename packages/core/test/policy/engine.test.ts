@@ -1,6 +1,24 @@
 import { describe, expect, test } from 'bun:test';
+import type { Manifest } from '../../src/core/types.ts';
 import { PolicyEngine } from '../../src/policy/engine.ts';
 import { makeCall, makeManifest } from '../helpers.ts';
+
+test('legacy programmatic manifests without workspaces retain global policy behavior', () => {
+	const manifest: Manifest = {
+		env: { name: 'legacy-embedder', version: '1.0.0', timeout: 5 },
+		policy: { default_unknown: 'block', approval_method: 'web' },
+		rules: { 'npm install *': 'allow' },
+		server: { host: '127.0.0.1', port: 9090 },
+	};
+
+	const result = new PolicyEngine(manifest).evaluate(makeCall({ command: 'npm install lodash' }));
+
+	expect(result).toMatchObject({
+		decision: 'allow',
+		matchedRule: 'npm install *',
+		policyScope: 'global',
+	});
+});
 
 // ── Rule matching takes priority ─────────────────────────────
 
@@ -261,5 +279,113 @@ describe('engine > input path matching', () => {
 			})
 		);
 		expect(result.decision).toBe('block');
+	});
+});
+
+describe('engine > workspace policy', () => {
+	const manifest = makeManifest({
+		policy: { default_unknown: 'approve', approval_method: 'web' },
+		rules: {
+			'git push *': 'approve',
+			'rm *': 'block',
+		},
+		workspaces: [
+			{
+				id: 'strict',
+				roots: ['/work/strict'],
+				default_unknown: 'block',
+				rules: { 'git push *': 'block' },
+			},
+			{
+				id: 'relaxed',
+				roots: ['/work/relaxed'],
+				default_unknown: 'allow',
+				rules: { 'rm /tmp/*': 'allow' },
+			},
+		],
+	});
+
+	test('explicit workspace rule overrides global rule', () => {
+		const result = new PolicyEngine(manifest).evaluate(
+			makeCall({ workspaceId: 'strict', command: 'git push origin main' })
+		);
+		expect(result).toMatchObject({
+			decision: 'block',
+			policyScope: 'workspace',
+			resolvedWorkspaceId: 'strict',
+			matchedRule: 'git push *',
+		});
+	});
+
+	test('cwd root selects workspace when no id is supplied', () => {
+		const result = new PolicyEngine(manifest).evaluate(
+			makeCall({ workingDirectory: '/work/strict/src', command: 'cargo build' })
+		);
+		expect(result).toMatchObject({
+			decision: 'block',
+			policyScope: 'workspace',
+			resolvedWorkspaceId: 'strict',
+		});
+	});
+
+	test('workspace can explicitly relax a global rule', () => {
+		const result = new PolicyEngine(manifest).evaluate(makeCall({ workspaceId: 'relaxed', command: 'rm /tmp/cache' }));
+		expect(result).toMatchObject({
+			decision: 'allow',
+			policyScope: 'workspace',
+			matchedRule: 'rm /tmp/*',
+		});
+	});
+
+	test('unmatched workspace rule inherits a matching global rule', () => {
+		const result = new PolicyEngine(manifest).evaluate(
+			makeCall({ workspaceId: 'relaxed', command: 'git push origin main' })
+		);
+		expect(result).toMatchObject({
+			decision: 'approve',
+			policyScope: 'global',
+			resolvedWorkspaceId: 'relaxed',
+		});
+	});
+
+	test('unknown explicit workspace cannot bypass a matching cwd workspace', () => {
+		const result = new PolicyEngine(manifest).evaluate(
+			makeCall({
+				workspaceId: 'missing',
+				workingDirectory: '/work/strict',
+				command: 'cargo build',
+			})
+		);
+		expect(result).toMatchObject({
+			decision: 'block',
+			policyScope: 'workspace',
+			resolvedWorkspaceId: 'strict',
+		});
+	});
+
+	test('unknown explicit workspace without a matching cwd fails closed before global rule matching', () => {
+		const result = new PolicyEngine(manifest).evaluate(
+			makeCall({
+				workspaceId: 'missing',
+				workingDirectory: '/other',
+				command: 'git push origin main',
+			})
+		);
+		expect(result).toMatchObject({ decision: 'block', policyScope: 'global' });
+		expect(result.matchedRule).toBeUndefined();
+		expect(result.resolvedWorkspaceId).toBeUndefined();
+		expect(result.reason).toContain('working directory did not match');
+	});
+
+	test('unknown explicit workspace without a matching cwd blocks readonly calls', () => {
+		const result = new PolicyEngine(manifest).evaluate(
+			makeCall({
+				workspaceId: 'missing',
+				workingDirectory: '/other',
+				command: 'git status',
+			})
+		);
+		expect(result).toMatchObject({ decision: 'block', classification: 'readonly' });
+		expect(result.reason).toContain('requested workspace "missing" was not configured');
 	});
 });

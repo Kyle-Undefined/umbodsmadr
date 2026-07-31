@@ -1,6 +1,6 @@
 import { findAdapterById } from '../adapters/index.ts';
 import { analyzeRules } from '../analytics/rule-analysis.ts';
-import { computeCoverage } from '../analytics/coverage.ts';
+import { computeCoverage, scopeCoverageSources } from '../analytics/coverage.ts';
 import { computeToolUsage } from '../analytics/tool-usage.ts';
 import type { AuditFilter } from '../analytics/types.ts';
 import type {
@@ -76,16 +76,18 @@ export interface Umbod {
 }
 
 const APPROVAL_POLL_INTERVAL_MS = 250;
+const DEFAULT_ACTIVITY_LIMIT = 200;
 
 function sleep(ms: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function parseLimitParam(url: URL): number | undefined {
+function parseLimitParam(url: URL): number {
 	const str = url.searchParams.get('limit');
-	if (str === null) return undefined;
-	const n = Number.parseInt(str, 10);
-	return Number.isFinite(n) ? n : undefined;
+	if (str === null) return DEFAULT_ACTIVITY_LIMIT;
+	if (!/^\d+$/.test(str)) return DEFAULT_ACTIVITY_LIMIT;
+	const n = Number(str);
+	return Number.isSafeInteger(n) && n >= 0 ? n : DEFAULT_ACTIVITY_LIMIT;
 }
 
 function decisionToApprovalStatus(decision: ApprovalDecision): 'approved' | 'denied' {
@@ -99,19 +101,23 @@ function parseIntParam(url: URL, name: string): number | undefined {
 	return Number.isFinite(n) ? n : undefined;
 }
 
-/** Reads since/until (ISO or relative like "7d"), agent, and project params. Throws on malformed times. */
+function optionalQueryParam(url: URL, name: string): string | undefined {
+	const value = url.searchParams.get(name);
+	return value === null ? undefined : value;
+}
+
+/** Reads analytics filters. Throws on malformed times. */
 function parseAuditFilter(url: URL): AuditFilter {
-	const classification = url.searchParams.get('classification');
-	const decision = url.searchParams.get('decision');
 	return {
-		since: resolveTimeParam(url.searchParams.get('since') ?? undefined),
-		until: resolveTimeParam(url.searchParams.get('until') ?? undefined),
-		agent: url.searchParams.get('agent') ?? undefined,
-		project: url.searchParams.get('project') ?? undefined,
-		tool: url.searchParams.get('tool') ?? undefined,
-		classification: classification === null ? undefined : (classification as AuditFilter['classification']),
-		decision: decision === null ? undefined : (decision as AuditFilter['decision']),
-		search: url.searchParams.get('search') ?? undefined,
+		since: resolveTimeParam(optionalQueryParam(url, 'since')),
+		until: resolveTimeParam(optionalQueryParam(url, 'until')),
+		agent: optionalQueryParam(url, 'agent'),
+		project: optionalQueryParam(url, 'project'),
+		workspace: optionalQueryParam(url, 'workspace'),
+		tool: optionalQueryParam(url, 'tool'),
+		classification: optionalQueryParam(url, 'classification') as AuditFilter['classification'],
+		decision: optionalQueryParam(url, 'decision') as AuditFilter['decision'],
+		search: optionalQueryParam(url, 'search'),
 	};
 }
 
@@ -239,6 +245,7 @@ export function createUmbod(options: UmbodOptions): Umbod {
 			env: manifest.env,
 			policy: manifest.policy,
 			rules: manifest.rules,
+			workspaces: manifest.workspaces ?? [],
 		});
 	}
 
@@ -248,9 +255,13 @@ export function createUmbod(options: UmbodOptions): Umbod {
 
 	function handleApprovalAction(approvalId: number, action: string): Response {
 		const status: 'approved' | 'denied' = action === 'approve' ? 'approved' : 'denied';
-		const resolved = auditLog.resolveApprovalRequest(approvalId, status);
+		const resolvedAt = new Date().toISOString();
+		const resolved = auditLog.resolveApprovalRequest(approvalId, status, resolvedAt);
 
-		return Response.json({ ok: resolved, approvalRequestId: approvalId, status }, { status: resolved ? 200 : 409 });
+		return Response.json(
+			{ ok: resolved, approvalRequestId: approvalId, status, resolvedAt: resolved ? resolvedAt : undefined },
+			{ status: resolved ? 200 : 409 }
+		);
 	}
 
 	function handleEvaluate(req: Request): Promise<Response> {
@@ -350,14 +361,7 @@ export function createUmbod(options: UmbodOptions): Umbod {
 			if (url.pathname !== '/api/analytics/coverage') return undefined;
 
 			const since = filter.since ?? new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-			const sources = sessionLogSources
-				.filter((source) => filter.agent === undefined || source.agent === filter.agent)
-				.map((source) => ({
-					...source,
-					since,
-					until: filter.until ?? source.until,
-					project: filter.project ?? source.project,
-				}));
+			const sources = scopeCoverageSources(manifest, sessionLogSources, { ...filter, since });
 			return computeCoverage(auditLog, sources, {
 				...filter,
 				since,

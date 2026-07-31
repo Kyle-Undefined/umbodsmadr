@@ -1,60 +1,50 @@
 import type { ToolCall } from '../core/types.ts';
 import { isRecord } from '../utils/guards.ts';
 
+function requiredString(payload: Record<string, unknown>, field: string): string {
+	const value = payload[field];
+	if (typeof value !== 'string' || value.trim().length === 0) {
+		throw new Error(`invalid tool call: missing ${field}`);
+	}
+	return value;
+}
+
+function optionalString(payload: Record<string, unknown>, field: string): string | undefined {
+	const value = payload[field];
+	if (value !== undefined && typeof value !== 'string') {
+		throw new Error(`invalid tool call: ${field} must be a string`);
+	}
+	return value;
+}
+
+function optionalStringArray(payload: Record<string, unknown>, field: string): string[] | undefined {
+	const value = payload[field];
+	if (value !== undefined && (!Array.isArray(value) || value.some((entry) => typeof entry !== 'string'))) {
+		throw new Error(`invalid tool call: ${field} must be a string array`);
+	}
+	return value as string[] | undefined;
+}
+
 export function parseEvaluatePayload(payload: unknown): ToolCall {
 	if (!isRecord(payload)) {
 		throw new Error('invalid tool call payload');
-	}
-
-	if (typeof payload.agent !== 'string' || payload.agent.trim().length === 0) {
-		throw new Error('invalid tool call: missing agent');
-	}
-
-	if (typeof payload.tool !== 'string' || payload.tool.trim().length === 0) {
-		throw new Error('invalid tool call: missing tool');
-	}
-
-	if (typeof payload.command !== 'string' || payload.command.trim().length === 0) {
-		throw new Error('invalid tool call: missing command');
-	}
-
-	if (
-		payload.args !== undefined &&
-		(!Array.isArray(payload.args) || payload.args.some((entry) => typeof entry !== 'string'))
-	) {
-		throw new Error('invalid tool call: args must be a string array');
-	}
-
-	if (payload.workingDirectory !== undefined && typeof payload.workingDirectory !== 'string') {
-		throw new Error('invalid tool call: workingDirectory must be a string');
 	}
 
 	if (payload.inputs !== undefined && !isRecord(payload.inputs)) {
 		throw new Error('invalid tool call: inputs must be an object');
 	}
 
-	if (payload.timestamp !== undefined && typeof payload.timestamp !== 'string') {
-		throw new Error('invalid tool call: timestamp must be a string');
-	}
-
-	if (payload.sessionId !== undefined && typeof payload.sessionId !== 'string') {
-		throw new Error('invalid tool call: sessionId must be a string');
-	}
-
-	if (payload.toolUseId !== undefined && typeof payload.toolUseId !== 'string') {
-		throw new Error('invalid tool call: toolUseId must be a string');
-	}
-
 	return {
-		agent: payload.agent,
-		tool: payload.tool,
-		command: payload.command,
-		args: payload.args as string[] | undefined,
-		workingDirectory: payload.workingDirectory,
+		agent: requiredString(payload, 'agent'),
+		tool: requiredString(payload, 'tool'),
+		command: requiredString(payload, 'command'),
+		args: optionalStringArray(payload, 'args'),
+		workingDirectory: optionalString(payload, 'workingDirectory'),
+		workspaceId: optionalString(payload, 'workspaceId'),
 		inputs: payload.inputs as Record<string, unknown> | undefined,
-		timestamp: payload.timestamp ?? new Date().toISOString(),
-		sessionId: payload.sessionId,
-		toolUseId: payload.toolUseId,
+		timestamp: optionalString(payload, 'timestamp') ?? new Date().toISOString(),
+		sessionId: optionalString(payload, 'sessionId'),
+		toolUseId: optionalString(payload, 'toolUseId'),
 	};
 }
 

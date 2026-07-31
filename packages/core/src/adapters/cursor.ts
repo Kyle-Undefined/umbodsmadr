@@ -1,8 +1,6 @@
-import { homedir } from 'node:os';
-import path from 'node:path';
-
 import type { HookAdapter } from './base.ts';
-import { buildCurlWrapperScript, buildPowerShellWrapperScript, normalizePayload } from '../hooks/adapter-utils.ts';
+import { hookInstallScaffold } from './install.ts';
+import { normalizePayload } from '../hooks/adapter-utils.ts';
 
 export const cursorAdapter: HookAdapter = {
 	id: 'cursor',
@@ -28,25 +26,10 @@ export const cursorAdapter: HookAdapter = {
 		});
 	},
 	install(options) {
-		const isWindows = options.platform ? options.platform === 'windows' : process.platform === 'win32';
-		const targetPath = isWindows ? path.win32 : path.posix;
-		const targetHome = options.homeDir ?? homedir();
-		const scriptFile = isWindows ? 'hook-cursor.ps1' : 'hook-cursor.sh';
-		const scriptPath = targetPath.join(options.outputDir, scriptFile);
-		const command = isWindows
-			? `powershell.exe -NonInteractive -ExecutionPolicy Bypass -File "${scriptPath}"`
-			: scriptPath;
+		const { targetPath, targetHome, command, asset } = hookInstallScaffold(options, 'cursor', 'cursor');
 
 		return {
-			assets: [
-				{
-					relativePath: scriptFile,
-					contents: isWindows
-						? buildPowerShellWrapperScript(options.url, 'cursor', 'cursor')
-						: buildCurlWrapperScript(options.url, 'cursor', 'cursor'),
-					executable: !isWindows,
-				},
-			],
+			assets: [asset],
 			config: {
 				fileName: 'cursor.json',
 				settingsPath: targetPath.join(targetHome, '.cursor', 'hooks.json'),

@@ -45,7 +45,7 @@ function showHelp(): void {
 Usage:
   umbod start [--env path] [--port 9090] [--host 127.0.0.1]
   umbod configure [--agent codex|cursor|claude|gemini] [--url http://127.0.0.1:9090] [--output .umbod]
-  umbod analyze tools|rules|coverage [--env path] [--since 14d] [--project dir] [--agent name] [--json]
+  umbod analyze tools|rules|coverage [--env path] [--since 14d] [--project dir] [--workspace id] [--agent name] [--json]
 
 Commands:
   start       Load a manifest, start the local server, and initialize SQLite.
@@ -54,14 +54,26 @@ Commands:
 `);
 }
 
-async function main(): Promise<void> {
-	const [command, ...args] = Bun.argv.slice(2);
+function analyzeTarget(value: string | undefined): AnalyzeTarget {
+	if (value === 'tools' || value === 'rules' || value === 'coverage') return value;
+	throw new Error('analyze requires one of: tools, rules, coverage');
+}
 
-	if (!command || command === '--help' || command === '-h') {
-		showHelp();
-		return;
-	}
+async function runAnalyzeCli(args: string[]): Promise<void> {
+	const [target, ...analyzeArgs] = args;
+	await runAnalyzeCommand(analyzeTarget(target), {
+		envPath: readFlag(analyzeArgs, '--env'),
+		since: readFlag(analyzeArgs, '--since'),
+		until: readFlag(analyzeArgs, '--until'),
+		project: readFlag(analyzeArgs, '--project'),
+		workspace: readFlag(analyzeArgs, '--workspace'),
+		agent: readFlag(analyzeArgs, '--agent'),
+		minOccurrences: readIntFlag(analyzeArgs, '--min-occurrences'),
+		json: hasFlag(analyzeArgs, '--json'),
+	});
+}
 
+async function runCommand(command: string, args: string[]): Promise<void> {
 	if (command === 'start') {
 		await runStartCommand({
 			envPath: readFlag(args, '--env'),
@@ -70,7 +82,6 @@ async function main(): Promise<void> {
 		});
 		return;
 	}
-
 	if (command === 'configure') {
 		await runConfigureCommand({
 			agent: readFlag(args, '--agent'),
@@ -79,25 +90,17 @@ async function main(): Promise<void> {
 		});
 		return;
 	}
+	if (command === 'analyze') return runAnalyzeCli(args);
+	throw new Error(`unknown command "${command}"`);
+}
 
-	if (command === 'analyze') {
-		const [target, ...analyzeArgs] = args;
-		if (target !== 'tools' && target !== 'rules' && target !== 'coverage') {
-			throw new Error('analyze requires one of: tools, rules, coverage');
-		}
-		await runAnalyzeCommand(target as AnalyzeTarget, {
-			envPath: readFlag(analyzeArgs, '--env'),
-			since: readFlag(analyzeArgs, '--since'),
-			until: readFlag(analyzeArgs, '--until'),
-			project: readFlag(analyzeArgs, '--project'),
-			agent: readFlag(analyzeArgs, '--agent'),
-			minOccurrences: readIntFlag(analyzeArgs, '--min-occurrences'),
-			json: hasFlag(analyzeArgs, '--json'),
-		});
+async function main(): Promise<void> {
+	const [command, ...args] = Bun.argv.slice(2);
+	if (!command || command === '--help' || command === '-h') {
+		showHelp();
 		return;
 	}
-
-	throw new Error(`unknown command "${command}"`);
+	await runCommand(command, args);
 }
 
 main().catch((error: unknown) => {

@@ -12,6 +12,13 @@ export type {
 
 export { AuditLogStore } from './db/audit-log.ts';
 export { PolicyEngine } from './policy/engine.ts';
+export {
+	isAbsoluteWorkspaceRoot,
+	isPathWithinWorkspaceRoot,
+	normalizeWorkspaceRoot,
+	resolveWorkspace,
+} from './policy/workspace.ts';
+export type { WorkspaceResolution, WorkspaceResolutionSource } from './policy/workspace.ts';
 export { classifyToolCall } from './policy/classifier.ts';
 export { createDefaultManifestSource, loadManifest } from './config/manifest.ts';
 export type { DefaultManifestOptions } from './config/manifest.ts';
@@ -28,7 +35,7 @@ export { logger } from './utils/logger.ts';
 export { computeToolUsage } from './analytics/tool-usage.ts';
 export { analyzeRules } from './analytics/rule-analysis.ts';
 export { suggestRules } from './analytics/suggestions.ts';
-export { computeCoverage } from './analytics/coverage.ts';
+export { computeCoverage, scopeCoverageSources } from './analytics/coverage.ts';
 export { readSessionToolCalls } from './sessions/index.ts';
 export type {
 	AnalyticsWindow,

@@ -24,6 +24,20 @@ export interface SessionLogSource {
 	rootDir?: string;
 	/** Filter to sessions whose cwd matches this absolute path. */
 	project?: string;
+	/** Filter to sessions whose cwd is within one of these absolute roots. */
+	projectRoots?: string[];
+	/** Always exclude sessions whose cwd is within one of these roots. */
+	projectRootExclusions?: string[];
+	/**
+	 * Additional host-neutral scope boundary. Calls must match both this layer
+	 * and projectRoots when both are present.
+	 */
+	scopeProjectRoots?: string[];
+	/**
+	 * Roots owned by competing scopes. The most-specific matching scope root or
+	 * competing root wins.
+	 */
+	competingProjectRoots?: string[];
 	since?: string;
 	until?: string;
 	/** Claude only: include subagent transcripts. Default true. */

@@ -1,5 +1,6 @@
 import { DEFAULT_HOST, DEFAULT_PORT } from '../core/types.ts';
-import type { ApprovalDecision, Manifest, PolicyConfig, ServerConfig } from '../core/types.ts';
+import type { ApprovalDecision, Manifest, PolicyConfig, ServerConfig, WorkspaceConfig } from '../core/types.ts';
+import { isAbsoluteWorkspaceRoot, normalizeWorkspaceRoot } from '../policy/workspace.ts';
 import { isRecord } from '../utils/guards.ts';
 import { errorMessage } from '../utils/errors.ts';
 
@@ -98,6 +99,52 @@ function normalizeRules(raw: Record<string, unknown> | undefined): Manifest['rul
 	return normalized;
 }
 
+function normalizeWorkspaceRoots(raw: unknown, id: string, seen: Set<string>): string[] {
+	if (raw === undefined) return [];
+	if (!Array.isArray(raw) || raw.some((root) => typeof root !== 'string')) {
+		throw new Error(`manifest workspace "${id}".roots must be a string array`);
+	}
+	return raw.map((root) => {
+		if (!isAbsoluteWorkspaceRoot(root)) {
+			throw new Error(`manifest workspace "${id}" root must be absolute: ${root}`);
+		}
+		const normalized = normalizeWorkspaceRoot(root);
+		if (seen.has(normalized)) throw new Error(`manifest workspace root is duplicated: ${root}`);
+		seen.add(normalized);
+		return root;
+	});
+}
+
+function normalizeWorkspaceEntry(entry: unknown, index: number, ids: Set<string>, roots: Set<string>): WorkspaceConfig {
+	if (!isRecord(entry)) throw new Error(`manifest workspaces[${index}] must be a table`);
+	const id = typeof entry.id === 'string' ? entry.id.trim() : '';
+	if (id.length === 0) throw new Error(`manifest workspaces[${index}].id must be a non-empty string`);
+	if (ids.has(id)) throw new Error(`manifest workspace id "${id}" is duplicated`);
+	ids.add(id);
+
+	const defaultUnknown = entry.default_unknown;
+	if (defaultUnknown !== undefined && !isDecision(defaultUnknown)) {
+		throw new Error(`manifest workspace "${id}".default_unknown must be allow, block, or approve`);
+	}
+	if (entry.rules !== undefined && !isRecord(entry.rules)) {
+		throw new Error(`manifest workspace "${id}".rules must be a table`);
+	}
+	return {
+		id,
+		roots: normalizeWorkspaceRoots(entry.roots, id, roots),
+		default_unknown: defaultUnknown,
+		rules: normalizeRules(entry.rules),
+	};
+}
+
+function normalizeWorkspaces(raw: unknown): WorkspaceConfig[] {
+	if (raw === undefined) return [];
+	if (!Array.isArray(raw)) throw new Error('manifest workspaces must be an array of tables');
+	const ids = new Set<string>();
+	const roots = new Set<string>();
+	return raw.map((entry, index) => normalizeWorkspaceEntry(entry, index, ids, roots));
+}
+
 export async function loadManifest(manifestPath: string): Promise<Manifest> {
 	let source: string;
 
@@ -118,6 +165,7 @@ export async function loadManifest(manifestPath: string): Promise<Manifest> {
 	const env = isRecord(parsed.env) ? parsed.env : undefined;
 	const policy = isRecord(parsed.policy) ? parsed.policy : undefined;
 	const rules = isRecord(parsed.rules) ? parsed.rules : undefined;
+	const workspaces = parsed.workspaces;
 	const server = isRecord(parsed.server) ? parsed.server : undefined;
 
 	if (!env?.name || !env?.version) {
@@ -137,6 +185,7 @@ export async function loadManifest(manifestPath: string): Promise<Manifest> {
 		},
 		policy: normalizePolicy(policy),
 		rules: normalizeRules(rules),
+		workspaces: normalizeWorkspaces(workspaces),
 		server: normalizeServer(server),
 	};
 }

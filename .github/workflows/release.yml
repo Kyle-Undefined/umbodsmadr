@@ -55,6 +55,28 @@ jobs:
       - name: Lint
         run: bun run lint
 
+      - name: Fallow audit
+        shell: bash
+        run: |
+          TAG_COMMIT="$(git rev-parse "${GITHUB_SHA}^{commit}")"
+          PRIOR_RELEASE_TAG="$(
+            git describe \
+              --tags \
+              --abbrev=0 \
+              --first-parent \
+              --match '[0-9]*.[0-9]*.[0-9]*' \
+              "${TAG_COMMIT}^" 2>/dev/null || true
+          )"
+          if [ -z "${PRIOR_RELEASE_TAG}" ]; then
+            echo "Could not find a prior release tag for ${GITHUB_REF_NAME}."
+            exit 1
+          fi
+          echo "Auditing changes since ${PRIOR_RELEASE_TAG}."
+          bunx fallow audit --base "${PRIOR_RELEASE_TAG}" --quiet
+
+      - name: Test
+        run: bun run test
+
   build-linux:
     runs-on: ubuntu-24.04
     needs: validate

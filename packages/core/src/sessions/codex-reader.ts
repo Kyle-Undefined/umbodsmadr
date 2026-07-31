@@ -5,32 +5,37 @@ import path from 'node:path';
 import { codexAdapter } from '../adapters/codex.ts';
 import { isRecord } from '../utils/guards.ts';
 import { jsonlRecords } from './jsonl.ts';
+import { stringAt, timestampInSourceWindow } from './record-utils.ts';
+import { sessionSourceMatchesCwd } from './source-filter.ts';
 import type { SessionLogSource, SessionToolCall } from './types.ts';
 
-function stringAt(value: unknown, key: string): string | undefined {
-	return isRecord(value) && typeof value[key] === 'string' ? value[key] : undefined;
+function childDirectories(directory: string): string[] {
+	if (!existsSync(directory)) return [];
+	return readdirSync(directory, { withFileTypes: true })
+		.filter((entry) => entry.isDirectory())
+		.map((entry) => path.join(directory, entry.name));
+}
+
+function dayInSourceWindow(directory: string, source: SessionLogSource): boolean {
+	const day = path.basename(directory);
+	const month = path.basename(path.dirname(directory));
+	const year = path.basename(path.dirname(path.dirname(directory)));
+	const dayStart = `${year}-${month}-${day}T00:00:00.000Z`;
+	const dayEnd = `${year}-${month}-${day}T23:59:59.999Z`;
+	return !(source.since && dayEnd < source.since) && !(source.until && dayStart > source.until);
 }
 
 function sourceFiles(rootDir: string, source: SessionLogSource): string[] {
-	if (!existsSync(rootDir)) return [];
-	const files: string[] = [];
-	for (const year of readdirSync(rootDir, { withFileTypes: true })) {
-		if (!year.isDirectory()) continue;
-		for (const month of readdirSync(path.join(rootDir, year.name), { withFileTypes: true })) {
-			if (!month.isDirectory()) continue;
-			for (const day of readdirSync(path.join(rootDir, year.name, month.name), { withFileTypes: true })) {
-				if (!day.isDirectory()) continue;
-				const dayStart = `${year.name}-${month.name}-${day.name}T00:00:00.000Z`;
-				const dayEnd = `${year.name}-${month.name}-${day.name}T23:59:59.999Z`;
-				if ((source.since && dayEnd < source.since) || (source.until && dayStart > source.until)) continue;
-				const dir = path.join(rootDir, year.name, month.name, day.name);
-				for (const entry of readdirSync(dir, { withFileTypes: true })) {
-					if (entry.isFile() && /^rollout-.*\.jsonl$/.test(entry.name)) files.push(path.join(dir, entry.name));
-				}
-			}
-		}
-	}
-	return files;
+	const dayDirectories = childDirectories(rootDir).flatMap((year) =>
+		childDirectories(year).flatMap((month) => childDirectories(month))
+	);
+	return dayDirectories
+		.filter((day) => dayInSourceWindow(day, source))
+		.flatMap((directory) =>
+			readdirSync(directory, { withFileTypes: true })
+				.filter((entry) => entry.isFile() && /^rollout-.*\.jsonl$/.test(entry.name))
+				.map((entry) => path.join(directory, entry.name))
+		);
 }
 
 function parsedArguments(value: unknown): Record<string, unknown> {
@@ -60,58 +65,118 @@ function normalizedCall(
 	});
 }
 
+interface CodexReaderState {
+	sessionId?: string;
+	cwd?: string;
+	emittedCallIds: Set<string>;
+}
+
+interface RawCodexCall {
+	rawToolName: string;
+	input: Record<string, unknown>;
+	toolUseId?: string;
+}
+
+interface ParsedCodexCall {
+	raw: RawCodexCall;
+	timestamp: string;
+}
+
+function updateSessionState(
+	record: Record<string, unknown>,
+	payload: Record<string, unknown> | undefined,
+	state: CodexReaderState
+): boolean {
+	if (record.type !== 'session_meta' || !payload) return false;
+	state.sessionId = stringAt(payload, 'id');
+	state.cwd = stringAt(payload, 'cwd');
+	return true;
+}
+
+function functionCall(payload: Record<string, unknown>): RawCodexCall | undefined {
+	const rawToolName = stringAt(payload, 'name');
+	return rawToolName
+		? {
+				rawToolName,
+				input: parsedArguments(payload.arguments),
+				toolUseId: stringAt(payload, 'call_id'),
+			}
+		: undefined;
+}
+
+function customToolCall(payload: Record<string, unknown>): RawCodexCall | undefined {
+	const rawToolName = stringAt(payload, 'name');
+	const customInput = stringAt(payload, 'input');
+	return rawToolName
+		? {
+				rawToolName,
+				input: customInput ? { command: customInput } : {},
+				toolUseId: stringAt(payload, 'call_id') ?? stringAt(payload, 'id'),
+			}
+		: undefined;
+}
+
+function patchCompletionCall(payload: Record<string, unknown>, state: CodexReaderState): RawCodexCall | undefined {
+	const toolUseId = stringAt(payload, 'call_id');
+	return toolUseId && state.emittedCallIds.has(toolUseId)
+		? undefined
+		: { rawToolName: 'apply_patch', input: {}, toolUseId };
+}
+
+function rawCodexCall(
+	record: Record<string, unknown>,
+	payload: Record<string, unknown>,
+	state: CodexReaderState
+): RawCodexCall | undefined {
+	if (record.type === 'response_item' && payload.type === 'function_call') return functionCall(payload);
+	if (record.type === 'response_item' && payload.type === 'custom_tool_call') return customToolCall(payload);
+	if (record.type === 'event_msg' && payload.type === 'patch_apply_end') return patchCompletionCall(payload, state);
+	return undefined;
+}
+
+function sessionToolCall(raw: RawCodexCall, state: CodexReaderState, timestamp: string, file: string): SessionToolCall {
+	const sessionId = state.sessionId as string;
+	const normalized = normalizedCall(raw.rawToolName, raw.input, sessionId, state.cwd, raw.toolUseId);
+	return {
+		agent: 'codex',
+		sessionId,
+		toolUseId: normalized.toolUseId,
+		tool: normalized.tool,
+		rawToolName: raw.rawToolName,
+		command: normalized.command,
+		timestamp,
+		cwd: state.cwd,
+		sourceFile: file,
+	};
+}
+
+function sessionContextIsEligible(source: SessionLogSource, state: CodexReaderState, timestamp: string): boolean {
+	if (!state.sessionId) return false;
+	if (!sessionSourceMatchesCwd(source, state.cwd)) return false;
+	return timestampInSourceWindow(timestamp, source);
+}
+
+function parsedCall(record: unknown, source: SessionLogSource, state: CodexReaderState): ParsedCodexCall | undefined {
+	if (!isRecord(record)) return undefined;
+	const payload = isRecord(record.payload) ? record.payload : undefined;
+	if (updateSessionState(record, payload, state)) return undefined;
+	const timestamp = stringAt(record, 'timestamp');
+	if (!timestamp) return undefined;
+	if (!payload) return undefined;
+	if (!sessionContextIsEligible(source, state, timestamp)) return undefined;
+	const raw = rawCodexCall(record, payload, state);
+	return raw ? { raw, timestamp } : undefined;
+}
+
 export async function* readCodexSessionToolCalls(source: SessionLogSource): AsyncGenerator<SessionToolCall> {
 	const rootDir = source.rootDir ?? path.join(homedir(), '.codex', 'sessions');
 	for (const file of sourceFiles(rootDir, source)) {
-		let sessionId: string | undefined;
-		let cwd: string | undefined;
-		const emittedCallIds = new Set<string>();
+		const state: CodexReaderState = { emittedCallIds: new Set<string>() };
 		for await (const record of jsonlRecords(file)) {
-			if (!isRecord(record)) continue;
-			const timestamp = stringAt(record, 'timestamp');
-			const payload = isRecord(record.payload) ? record.payload : undefined;
-			if (record.type === 'session_meta' && payload) {
-				sessionId = stringAt(payload, 'id');
-				cwd = stringAt(payload, 'cwd');
-				continue;
-			}
-			if (!timestamp || !sessionId || !payload || (source.project && cwd !== source.project)) continue;
-			if (source.since && timestamp < source.since) continue;
-			if (source.until && timestamp > source.until) continue;
-
-			let rawToolName: string | undefined;
-			let input: Record<string, unknown> = {};
-			let toolUseId: string | undefined;
-			if (record.type === 'response_item' && payload.type === 'function_call') {
-				rawToolName = stringAt(payload, 'name');
-				input = parsedArguments(payload.arguments);
-				toolUseId = stringAt(payload, 'call_id');
-			} else if (record.type === 'response_item' && payload.type === 'custom_tool_call') {
-				rawToolName = stringAt(payload, 'name');
-				const customInput = stringAt(payload, 'input');
-				input = customInput ? { command: customInput } : {};
-				toolUseId = stringAt(payload, 'call_id') ?? stringAt(payload, 'id');
-			} else if (record.type === 'event_msg' && payload.type === 'patch_apply_end') {
-				rawToolName = 'apply_patch';
-				toolUseId = stringAt(payload, 'call_id');
-				// Modern rollouts record both the originating custom_tool_call and
-				// its completion event. The latter is only a fallback for older logs.
-				if (toolUseId && emittedCallIds.has(toolUseId)) continue;
-			}
-			if (!rawToolName) continue;
-			const normalized = normalizedCall(rawToolName, input, sessionId, cwd, toolUseId);
-			yield {
-				agent: 'codex',
-				sessionId,
-				toolUseId: normalized.toolUseId,
-				tool: normalized.tool,
-				rawToolName,
-				command: normalized.command,
-				timestamp,
-				cwd,
-				sourceFile: file,
-			};
-			if (toolUseId) emittedCallIds.add(toolUseId);
+			const parsed = parsedCall(record, source, state);
+			if (!parsed) continue;
+			yield sessionToolCall(parsed.raw, state, parsed.timestamp, file);
+			if (parsed.raw.toolUseId) state.emittedCallIds.add(parsed.raw.toolUseId);
 		}
 	}
 }

@@ -76,41 +76,7 @@ body {
 	outline-offset: 2px;
 }
 
-/* ═══════════════════ Background layers ═══════════════════ */
-
-.bg-mesh {
-	position: fixed;
-	inset: 0;
-	pointer-events: none;
-	z-index: 0;
-	overflow: hidden;
-}
-
-.bg-mesh::after {
-	width: 550px;
-	height: 550px;
-	bottom: -200px;
-	right: -120px;
-	background: radial-gradient(circle, rgba(52, 211, 153, 0.03), transparent 70%);
-	animation-delay: -12s;
-	animation-direction: reverse;
-}
-
-@keyframes drift {
-	0%,
-	100% {
-		transform: translate(0, 0) scale(1);
-	}
-	25% {
-		transform: translate(50px, -35px) scale(1.06);
-	}
-	50% {
-		transform: translate(-30px, 45px) scale(0.94);
-	}
-	75% {
-		transform: translate(35px, 25px) scale(1.03);
-	}
-}
+/* ═══════════════════ Background layer ═══════════════════ */
 
 .bg-grid {
 	position: fixed;
@@ -577,7 +543,10 @@ body {
 
 /* ═══════════════════ Entry metadata ═══════════════════ */
 
-.entry-header {
+.entry-header,
+.approval-header,
+.suggestion-impact-header,
+.suggestion-impact-summary {
 	display: flex;
 	align-items: center;
 	justify-content: space-between;
@@ -807,13 +776,6 @@ body {
 			var(--carved),
 			0 0 24px -4px rgba(212, 165, 68, 0.06);
 	}
-}
-
-.approval-header {
-	display: flex;
-	align-items: center;
-	justify-content: space-between;
-	gap: 12px;
 }
 
 .approval-card p {
@@ -1261,6 +1223,17 @@ body {
 	border-top: 1px solid var(--border);
 }
 
+.insights-scope {
+	display: flex;
+	align-items: center;
+	justify-content: flex-end;
+	gap: 10px;
+	margin-bottom: 14px;
+	color: var(--text-muted);
+	font-family: var(--mono);
+	font-size: 0.68rem;
+}
+
 .insights-grid {
 	display: grid;
 	grid-template-columns: minmax(0, 1.25fr) minmax(280px, 0.75fr);
@@ -1625,14 +1598,6 @@ body {
 	background: rgba(0, 0, 0, 0.2);
 }
 
-.suggestion-impact-header,
-.suggestion-impact-summary {
-	display: flex;
-	align-items: center;
-	justify-content: space-between;
-	gap: 12px;
-}
-
 .suggestion-impact-header code {
 	overflow: hidden;
 	text-overflow: ellipsis;
@@ -1749,6 +1714,11 @@ body {
 	color: var(--text-muted);
 	font-family: var(--mono);
 	font-size: 0.75rem;
+}
+
+.coverage-error {
+	color: var(--danger);
+	font-size: 0.72rem;
 }
 
 /* ═══════════════════ Responsive ═══════════════════ */

@@ -1,8 +1,6 @@
-import { homedir } from 'node:os';
-import path from 'node:path';
-
 import { normalizeHookTimeoutSeconds, type HookAdapter } from './base.ts';
-import { buildCurlWrapperScript, buildPowerShellWrapperScript, normalizePayload } from '../hooks/adapter-utils.ts';
+import { hookInstallScaffold } from './install.ts';
+import { normalizePayload } from '../hooks/adapter-utils.ts';
 
 export const codexAdapter: HookAdapter = {
 	id: 'codex',
@@ -46,26 +44,11 @@ export const codexAdapter: HookAdapter = {
 		});
 	},
 	install(options) {
-		const isWindows = options.platform ? options.platform === 'windows' : process.platform === 'win32';
-		const targetPath = isWindows ? path.win32 : path.posix;
-		const targetHome = options.homeDir ?? homedir();
-		const scriptFile = isWindows ? 'hook-codex.ps1' : 'hook-codex.sh';
-		const scriptPath = targetPath.join(options.outputDir, scriptFile);
+		const { targetPath, targetHome, command, asset } = hookInstallScaffold(options, 'codex', 'codex');
 		const timeoutSeconds = normalizeHookTimeoutSeconds(options.timeoutSeconds);
-		const command = isWindows
-			? `powershell.exe -NonInteractive -ExecutionPolicy Bypass -File "${scriptPath}"`
-			: scriptPath;
 
 		return {
-			assets: [
-				{
-					relativePath: scriptFile,
-					contents: isWindows
-						? buildPowerShellWrapperScript(options.url, 'codex', 'codex')
-						: buildCurlWrapperScript(options.url, 'codex', 'codex'),
-					executable: !isWindows,
-				},
-			],
+			assets: [asset],
 			config: {
 				fileName: 'codex.toml',
 				settingsPath: targetPath.join(targetHome, '.codex', 'config.toml'),

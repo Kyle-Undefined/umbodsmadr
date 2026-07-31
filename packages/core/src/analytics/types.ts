@@ -9,6 +9,8 @@ export interface AuditFilter extends AnalyticsWindow {
 	agent?: string;
 	/** Exact working_directory match. */
 	project?: string;
+	/** Exact resolved workspace id match. */
+	workspace?: string;
 	tool?: string;
 	classification?: CallClassification;
 	decision?: ApprovalDecision;
@@ -58,6 +60,7 @@ export interface ToolUsageStats {
 		sessions: number;
 		agents: string[];
 		projects: string[];
+		workspaces: string[];
 	};
 	byTool: ToolUsageRow[];
 	byTaskType: TaskTypeRow[];
@@ -66,6 +69,8 @@ export interface ToolUsageStats {
 
 export interface MatchedRuleCount {
 	matchedRule: string;
+	policyScope?: 'global' | 'workspace';
+	resolvedWorkspaceId?: string;
 	count: number;
 	lastMatched: string;
 }
@@ -86,6 +91,8 @@ export type RuleStatus = 'active' | 'stale' | 'dead' | 'shadowed' | 'invalid';
 export interface RuleFinding {
 	pattern: string;
 	decision: ApprovalDecision;
+	/** Present when the finding belongs to a workspace rule table. */
+	workspaceId?: string;
 	matchCount: number;
 	matchCountAllTime: number;
 	lastMatched?: string;
@@ -99,6 +106,8 @@ export type SuggestionKind = 'promote-approved' | 'block-denied' | 'remove-dead'
 export interface RuleSuggestion {
 	pattern: string;
 	decision: ApprovalDecision;
+	/** Target workspace rule table; omitted for global suggestions. */
+	workspaceId?: string;
 	kind: SuggestionKind;
 	rationale: string;
 	evidence: {
@@ -171,6 +180,7 @@ export interface CoverageReport {
 
 export interface RuleAnalysis {
 	window: AnalyticsWindow;
+	workspaceId?: string;
 	rules: RuleFinding[];
 	approvalHotspots: ApprovalHotspot[];
 	suggestions: RuleSuggestion[];

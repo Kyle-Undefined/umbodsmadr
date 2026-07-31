@@ -117,4 +117,64 @@ describe('analytics > rule analysis', () => {
 		expect(hotspot?.denied).toBe(1);
 		expect(hotspot?.sampleCommands.length).toBeGreaterThan(0);
 	});
+
+	test('keeps approval hotspot samples inside the requested workspace', () => {
+		const manifest = makeManifest({
+			rules: { 'gh *': 'approve' },
+			workspaces: [
+				{ id: 'client', roots: ['/work/client'], rules: {} },
+				{ id: 'personal', roots: ['/work/personal'], rules: {} },
+			],
+		});
+		record(manifest, {
+			workspaceId: 'client',
+			workingDirectory: '/work/client',
+			command: 'gh pr create --repo client/project',
+		});
+		record(manifest, {
+			workspaceId: 'personal',
+			workingDirectory: '/work/personal',
+			command: 'gh pr create --repo personal/project',
+		});
+
+		const analysis = analyzeRules(manifest, store, { workspace: 'client' });
+		const hotspot = analysis.approvalHotspots.find((entry) => entry.commandKey === 'gh');
+
+		expect(hotspot?.total).toBe(1);
+		expect(hotspot?.sampleCommands).toEqual(['gh pr create --repo client/project']);
+	});
+
+	test('analyzes workspace rule health independently from global rules', () => {
+		const manifest = makeManifest({
+			rules: { 'git push *': 'approve' },
+			workspaces: [
+				{
+					id: 'client',
+					roots: ['/work/client'],
+					rules: { 'git push *': 'block', 'terraform plan *': 'approve' },
+				},
+			],
+		});
+		record(manifest, {
+			workspaceId: 'client',
+			workingDirectory: '/work/client',
+			command: 'git push origin main',
+		});
+
+		const analysis = analyzeRules(manifest, store, { workspace: 'client' });
+		expect(analysis.workspaceId).toBe('client');
+		expect(analysis.rules.find((rule) => rule.pattern === 'git push *')).toMatchObject({
+			workspaceId: 'client',
+			status: 'active',
+			matchCount: 1,
+		});
+		expect(analysis.rules.find((rule) => rule.pattern === 'terraform plan *')?.status).toBe('dead');
+		expect(analysis.tomlSnippet).toContain('Workspace target: "client"');
+		expect(analysis.tomlSnippet).toContain('Move and uncomment each proposed entry');
+		expect(analysis.tomlSnippet).not.toContain('\n[workspaces.rules]\n');
+	});
+
+	test('rejects analytics for an unknown workspace id', () => {
+		expect(() => analyzeRules(makeManifest(), store, { workspace: 'missing' })).toThrow('not configured');
+	});
 });

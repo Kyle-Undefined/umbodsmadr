@@ -1,8 +1,6 @@
-import { homedir } from 'node:os';
-import path from 'node:path';
-
 import type { HookAdapter } from './base.ts';
-import { buildCurlWrapperScript, buildPowerShellWrapperScript, normalizePayload } from '../hooks/adapter-utils.ts';
+import { hookInstallScaffold } from './install.ts';
+import { normalizePayload } from '../hooks/adapter-utils.ts';
 
 export const geminiAdapter: HookAdapter = {
 	id: 'gemini',
@@ -39,25 +37,10 @@ export const geminiAdapter: HookAdapter = {
 		});
 	},
 	install(options) {
-		const isWindows = options.platform ? options.platform === 'windows' : process.platform === 'win32';
-		const targetPath = isWindows ? path.win32 : path.posix;
-		const targetHome = options.homeDir ?? homedir();
-		const scriptFile = isWindows ? 'hook-gemini.ps1' : 'hook-gemini.sh';
-		const scriptPath = targetPath.join(options.outputDir, scriptFile);
-		const command = isWindows
-			? `powershell.exe -NonInteractive -ExecutionPolicy Bypass -File "${scriptPath}"`
-			: scriptPath;
+		const { targetPath, targetHome, command, asset } = hookInstallScaffold(options, 'gemini', 'gemini');
 
 		return {
-			assets: [
-				{
-					relativePath: scriptFile,
-					contents: isWindows
-						? buildPowerShellWrapperScript(options.url, 'gemini', 'gemini')
-						: buildCurlWrapperScript(options.url, 'gemini', 'gemini'),
-					executable: !isWindows,
-				},
-			],
+			assets: [asset],
 			config: {
 				fileName: 'gemini.json',
 				settingsPath: targetPath.join(targetHome, '.gemini', 'settings.json'),

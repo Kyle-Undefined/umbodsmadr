@@ -179,6 +179,49 @@ approval_method = "web"
 		const manifest = await loadManifest(path);
 		expect(manifest.rules).toEqual({});
 	});
+
+	test('workspace profiles support explicit ids, roots, fallbacks, and rules', async () => {
+		const path = writeToml(`
+[env]
+name = "test"
+version = "1.0.0"
+timeout = 5
+
+[policy]
+default_unknown = "approve"
+approval_method = "web"
+
+[[workspaces]]
+id = "client"
+roots = ["/work/client", "C:\\\\work\\\\client"]
+default_unknown = "block"
+
+[workspaces.rules]
+"git push *" = "block"
+
+[[workspaces]]
+id = "conceptual"
+
+[workspaces.rules]
+"deploy *" = "approve"
+`);
+
+		const manifest = await loadManifest(path);
+		expect(manifest.workspaces).toEqual([
+			{
+				id: 'client',
+				roots: ['/work/client', 'C:\\work\\client'],
+				default_unknown: 'block',
+				rules: { 'git push *': 'block' },
+			},
+			{
+				id: 'conceptual',
+				roots: [],
+				default_unknown: undefined,
+				rules: { 'deploy *': 'approve' },
+			},
+		]);
+	});
 });
 
 // ── Invalid manifests ────────────────────────────────────────
@@ -299,5 +342,85 @@ approval_method = "web"
 		const path = writeToml('this is not valid toml [[[');
 
 		await expect(loadManifest(path)).rejects.toThrow('failed to parse');
+	});
+
+	test('rejects duplicate workspace ids and roots', async () => {
+		const duplicateId = writeToml(`
+[env]
+name = "test"
+version = "1.0.0"
+timeout = 5
+[policy]
+default_unknown = "block"
+approval_method = "web"
+[[workspaces]]
+id = "same"
+[[workspaces]]
+id = "same"
+`);
+		await expect(loadManifest(duplicateId)).rejects.toThrow('duplicated');
+
+		const duplicateRoot = writeToml(`
+[env]
+name = "test"
+version = "1.0.0"
+timeout = 5
+[policy]
+default_unknown = "block"
+approval_method = "web"
+[[workspaces]]
+id = "one"
+roots = ["C:\\\\Work\\\\Repo"]
+[[workspaces]]
+id = "two"
+roots = ["c:/work/repo"]
+`);
+		await expect(loadManifest(duplicateRoot)).rejects.toThrow('root is duplicated');
+	});
+
+	test('rejects relative workspace roots and invalid workspace decisions', async () => {
+		const relativeRoot = writeToml(`
+[env]
+name = "test"
+version = "1.0.0"
+timeout = 5
+[policy]
+default_unknown = "block"
+approval_method = "web"
+[[workspaces]]
+id = "bad"
+roots = ["relative/path"]
+`);
+		await expect(loadManifest(relativeRoot)).rejects.toThrow('must be absolute');
+
+		const invalidDecision = writeToml(`
+[env]
+name = "test"
+version = "1.0.0"
+timeout = 5
+[policy]
+default_unknown = "block"
+approval_method = "web"
+[[workspaces]]
+id = "bad"
+default_unknown = "ask"
+`);
+		await expect(loadManifest(invalidDecision)).rejects.toThrow('default_unknown');
+	});
+
+	test('rejects malformed workspace rules values', async () => {
+		const path = writeToml(`
+[env]
+name = "test"
+version = "1.0.0"
+timeout = 5
+[policy]
+default_unknown = "block"
+approval_method = "web"
+[[workspaces]]
+id = "bad"
+rules = "block"
+`);
+		await expect(loadManifest(path)).rejects.toThrow('workspace "bad".rules must be a table');
 	});
 });

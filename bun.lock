@@ -4,14 +4,12 @@
   "workspaces": {
     "": {
       "name": "umbodsmadr",
-      "dependencies": {
-        "oxfmt": "0.44.0",
-        "oxlint": "1.59.0",
-      },
       "devDependencies": {
         "bumpp": "11.0.1",
         "bun-types": "1.3.14",
         "fallow": "^3.3.0",
+        "oxfmt": "0.44.0",
+        "oxlint": "1.59.0",
         "typescript": "5.9.3",
       },
     },

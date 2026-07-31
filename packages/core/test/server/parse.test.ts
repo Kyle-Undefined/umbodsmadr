@@ -11,6 +11,7 @@ describe('parseEvaluatePayload', () => {
 			command: 'git status',
 			args: ['--short'],
 			workingDirectory: '/home/user/project',
+			workspaceId: 'client',
 			inputs: { key: 'value' },
 			timestamp: '2025-01-01T00:00:00.000Z',
 		});
@@ -20,6 +21,7 @@ describe('parseEvaluatePayload', () => {
 		expect(call.command).toBe('git status');
 		expect(call.args).toEqual(['--short']);
 		expect(call.workingDirectory).toBe('/home/user/project');
+		expect(call.workspaceId).toBe('client');
 		expect(call.inputs).toEqual({ key: 'value' });
 		expect(call.timestamp).toBe('2025-01-01T00:00:00.000Z');
 	});
@@ -77,6 +79,17 @@ describe('parseEvaluatePayload', () => {
 				workingDirectory: 42,
 			})
 		).toThrow('workingDirectory must be a string');
+	});
+
+	test('rejects non-string workspaceId', () => {
+		expect(() =>
+			parseEvaluatePayload({
+				agent: 'test',
+				tool: 'bash',
+				command: 'ls',
+				workspaceId: 42,
+			})
+		).toThrow('workspaceId must be a string');
 	});
 
 	test('rejects non-object inputs', () => {

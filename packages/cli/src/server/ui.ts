@@ -33,7 +33,6 @@ export function renderDashboard(
     <script defer src="/assets/alpine.js"></script>
   </head>
   <body x-data>
-    <div class="bg-mesh"></div>
     <div class="bg-grid"></div>
 
     <main class="app-shell">
@@ -61,7 +60,7 @@ export function renderDashboard(
               <button type="button" class="rules-close-btn" @click="$store.dash.rulesOpen = false" aria-label="Close">&times;</button>
             </div>
             <div class="rules-drawer-body">
-              <pre class="rules-code"><template x-for="rule in $store.dash.ruleEntries" :key="rule.pattern"><span><span class="rule-pattern" x-text="'&quot;' + rule.pattern + '&quot;'"></span><span class="rule-eq"> = </span><span :class="'rule-decision rule-decision--' + rule.decision" x-text="'&quot;' + rule.decision + '&quot;'"></span>
+              <pre class="rules-code"><template x-for="rule in $store.dash.ruleEntries" :key="rule.scope + ':' + rule.pattern"><span><span class="rule-pattern" x-text="'[' + rule.scope + '] &quot;' + rule.pattern + '&quot;'"></span><span class="rule-eq"> = </span><span :class="'rule-decision rule-decision--' + rule.decision" x-text="'&quot;' + rule.decision + '&quot;'"></span>
 </span></template><template x-if="$store.dash.ruleEntries.length === 0"><span># No rules configured</span></template></pre>
             </div>
           </div>
@@ -104,9 +103,16 @@ export function renderDashboard(
         <button type="button" class="insights-disclosure" @click="$store.dash.toggleInsights()" :aria-expanded="$store.dash.insightsOpen">
           <h2><span class="section-icon" aria-hidden="true">&#9678;</span> Insights</h2>
           <span class="insights-disclosure-meta"><span class="panel-meta" x-text="$store.dash.insights.tools.totals.entries.toLocaleString() + ' calls'">0 calls</span><span class="disclosure-chevron" :class="{ 'disclosure-chevron--open': $store.dash.insightsOpen }">&#9662;</span></span>
-        </button>
-        <div class="insights-content" x-show="$store.dash.insightsOpen" x-cloak>
-        <div class="insights-grid">
+	        </button>
+	        <div class="insights-content" x-show="$store.dash.insightsOpen" x-cloak>
+	        <div class="insights-scope">
+	          <label for="insight-workspace">Policy scope</label>
+	          <select id="insight-workspace" class="filter-select" x-model="$store.dash.insightWorkspace" @change="$store.dash.loadInsights()">
+	            <option value="">Global policy / all activity</option>
+	            <template x-for="workspace in ($store.dash.manifest.workspaces || [])" :key="workspace.id"><option :value="workspace.id" x-text="workspace.id"></option></template>
+	          </select>
+	        </div>
+	        <div class="insights-grid">
           <div class="insight-card">
             <div class="insight-card-header">
               <h3 class="insight-heading">Tool Use</h3>
@@ -163,6 +169,10 @@ export function renderDashboard(
               <option value="">All projects</option>
               <template x-for="project in $store.dash.insights.tools.totals.projects" :key="project"><option :value="project" x-text="project"></option></template>
             </select>
+            <select class="filter-select" x-model="$store.dash.explorerFilters.workspace" @change="$store.dash.applyExplorerFilters()">
+              <option value="">All workspaces</option>
+              <template x-for="workspace in ($store.dash.insights.tools.totals.workspaces || [])" :key="workspace"><option :value="workspace" x-text="workspace"></option></template>
+            </select>
             <button type="button" class="copy-button" @click="$store.dash.resetExplorer()">Reset</button>
           </div>
           <div class="call-explorer-list">
@@ -177,7 +187,7 @@ export function renderDashboard(
                   <time x-text="$store.dash.formatTimestamp(entry.timestamp)"></time>
                 </button>
                 <div class="call-explorer-detail" x-show="$store.dash.explorerOpenId === entry.id" x-cloak>
-                  <dl><div><dt>Agent</dt><dd x-text="entry.agent"></dd></div><div><dt>Project</dt><dd x-text="entry.workingDirectory || '—'"></dd></div><div><dt>Session</dt><dd x-text="entry.sessionId || '—'"></dd></div><div><dt>Matched rule</dt><dd x-text="entry.matchedRule || 'fallback / automatic'"></dd></div></dl>
+                  <dl><div><dt>Agent</dt><dd x-text="entry.agent"></dd></div><div><dt>Project</dt><dd x-text="entry.workingDirectory || '—'"></dd></div><div><dt>Workspace</dt><dd x-text="entry.resolvedWorkspaceId || entry.workspaceId || 'Unscoped'"></dd></div><div><dt>Policy scope</dt><dd x-text="entry.policyScope || 'global'"></dd></div><div><dt>Session</dt><dd x-text="entry.sessionId || '—'"></dd></div><div><dt>Matched rule</dt><dd x-text="entry.matchedRule || 'fallback / automatic'"></dd></div></dl>
                   <p class="call-reason" x-text="entry.reason"></p>
                   <pre x-text="JSON.stringify(entry.inputs, null, 2)"></pre>
                 </div>
@@ -218,10 +228,11 @@ export function renderDashboard(
             <pre class="suggestions-code" x-text="$store.dash.insights.rules.tomlSnippet"></pre>
           </div>
         </template>
-        <div class="coverage-block">
-          <button type="button" class="button button-secondary" :disabled="$store.dash.coverageLoading" @click="$store.dash.loadCoverage()" x-text="$store.dash.coverageLoading ? 'Scanning transcripts…' : 'Check transcript coverage'"></button>
-          <template x-if="$store.dash.coverage"><span class="coverage-summary" x-text="Math.round($store.dash.coverage.coverageRatio * 100) + '% covered · ' + $store.dash.coverage.totals.gaps + ' gaps'"></span></template>
-        </div>
+	        <div class="coverage-block">
+	          <button type="button" class="button button-secondary" :disabled="$store.dash.coverageLoading" @click="$store.dash.loadCoverage()" x-text="$store.dash.coverageLoading ? 'Scanning transcripts…' : 'Check transcript coverage'"></button>
+	          <template x-if="$store.dash.coverage"><span class="coverage-summary" x-text="Math.round($store.dash.coverage.coverageRatio * 100) + '% covered · ' + $store.dash.coverage.totals.gaps + ' gaps'"></span></template>
+	          <template x-if="$store.dash.coverageError"><span class="coverage-error" x-text="$store.dash.coverageError"></span></template>
+	        </div>
         </div>
       </section>
 

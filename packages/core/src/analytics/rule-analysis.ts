@@ -1,4 +1,4 @@
-import type { AuditEntry, Manifest } from '../core/types.ts';
+import type { AuditEntry, Manifest, WorkspaceConfig } from '../core/types.ts';
 import type { AuditLogStore } from '../db/audit-log.ts';
 import { matchesPattern } from '../policy/rule-matcher.ts';
 import { ruleMatchCandidates } from '../policy/rule-candidates.ts';
@@ -60,122 +60,188 @@ function replayEntry(entry: AuditEntry, rules: Manifest['rules']): { winner?: st
 	return { winner, matching };
 }
 
+type MatchedRuleRow = ReturnType<AuditLogStore['matchedRuleCounts']>[number];
+
+function resolveAnalysisWorkspace(manifest: Manifest, workspaceId: string | undefined): WorkspaceConfig | undefined {
+	if (workspaceId === undefined) return undefined;
+	const workspace = manifest.workspaces?.find((entry) => entry.id === workspaceId);
+	if (!workspace) throw new Error(`workspace "${workspaceId}" is not configured`);
+	return workspace;
+}
+
+function rowMatchesScope(row: MatchedRuleRow, workspaceId: string | undefined): boolean {
+	return workspaceId
+		? row.policyScope === 'workspace' && row.resolvedWorkspaceId === workspaceId
+		: row.policyScope !== 'workspace';
+}
+
+function matchedRuleCountMap(rows: MatchedRuleRow[], workspaceId: string | undefined): Map<string, MatchedRuleRow> {
+	const counts = new Map<string, MatchedRuleRow>();
+	for (const row of rows) {
+		if (!rowMatchesScope(row, workspaceId)) continue;
+		const current = counts.get(row.matchedRule);
+		counts.set(row.matchedRule, {
+			...row,
+			count: (current?.count ?? 0) + row.count,
+			lastMatched: current && current.lastMatched > row.lastMatched ? current.lastMatched : row.lastMatched,
+		});
+	}
+	return counts;
+}
+
+function empiricalShadows(entries: AuditEntry[], rules: Manifest['rules']): Map<string, string> {
+	const shadowedBy = new Map<string, string>();
+	for (const entry of entries) {
+		const { winner, matching } = replayEntry(entry, rules);
+		if (winner === undefined) continue;
+		for (const pattern of matching) {
+			if (pattern !== winner && !shadowedBy.has(pattern)) shadowedBy.set(pattern, winner);
+		}
+	}
+	return shadowedBy;
+}
+
+function addStaticShadows(
+	rulePatterns: Array<[string, Manifest['rules'][string]]>,
+	shadowedBy: Map<string, string>
+): void {
+	for (let index = 0; index < rulePatterns.length; index += 1) {
+		const [pattern] = rulePatterns[index] as [string, Manifest['rules'][string]];
+		if (shadowedBy.has(pattern) || !isWildcardFree(pattern)) continue;
+		for (let earlierIndex = 0; earlierIndex < index; earlierIndex += 1) {
+			const [earlier] = rulePatterns[earlierIndex] as [string, Manifest['rules'][string]];
+			if (!matchesPattern(pattern, earlier)) continue;
+			shadowedBy.set(pattern, earlier);
+			break;
+		}
+	}
+}
+
+function matchedCount(row: MatchedRuleRow | undefined): number {
+	return row ? row.count : 0;
+}
+
+function findingState(
+	pattern: string,
+	allTimeCount: number,
+	windowCount: number,
+	shadowedBy: Map<string, string>
+): Pick<RuleFinding, 'status' | 'note'> {
+	const invalidNote = invalidRegexNote(pattern);
+	if (invalidNote !== undefined) {
+		return { status: 'invalid', note: `regex fails to compile: ${invalidNote}` };
+	}
+	if (allTimeCount === 0) {
+		return { status: shadowedBy.has(pattern) ? 'shadowed' : 'dead' };
+	}
+	return { status: windowCount === 0 ? 'stale' : 'active' };
+}
+
+function ruleFinding(
+	[pattern, decision]: [string, Manifest['rules'][string]],
+	workspaceId: string | undefined,
+	allTimeCounts: Map<string, MatchedRuleRow>,
+	windowCounts: Map<string, MatchedRuleRow>,
+	shadowedBy: Map<string, string>
+): RuleFinding {
+	const allTime = allTimeCounts.get(pattern);
+	const inWindow = windowCounts.get(pattern);
+	const matchCount = matchedCount(inWindow);
+	const matchCountAllTime = matchedCount(allTime);
+	const { status, note } = findingState(pattern, matchCountAllTime, matchCount, shadowedBy);
+
+	return {
+		pattern,
+		decision,
+		workspaceId,
+		matchCount,
+		matchCountAllTime,
+		lastMatched: allTime?.lastMatched,
+		status,
+		shadowedBy: status === 'shadowed' ? shadowedBy.get(pattern) : undefined,
+		note,
+	};
+}
+
+function hygieneSuggestion(finding: RuleFinding): RuleSuggestion {
+	const invalid = finding.status === 'invalid';
+	const shadowed = finding.status === 'shadowed';
+	return {
+		pattern: finding.pattern,
+		decision: finding.decision,
+		workspaceId: finding.workspaceId,
+		kind: invalid ? 'fix-invalid' : shadowed ? 'reorder-shadowed' : 'remove-dead',
+		rationale: invalid
+			? `${finding.note ?? 'invalid regex'} — this rule silently never matches`
+			: shadowed
+				? `never wins: earlier rule "${finding.shadowedBy}" captures its matches first`
+				: 'never matched any recorded tool call',
+		evidence: {
+			occurrences: finding.matchCountAllTime,
+			approvedCount: 0,
+			deniedCount: 0,
+			distinctCommands: 0,
+			sampleCommands: [],
+		},
+		conflicts: [],
+	};
+}
+
 export function analyzeRules(
 	manifest: Manifest,
 	auditLog: AuditLogStore,
 	options: RuleAnalysisOptions = {}
 ): RuleAnalysis {
 	const window = { since: options.since, until: options.until };
-	const filter = { ...window, agent: options.agent, project: options.project };
+	const filter = {
+		...window,
+		agent: options.agent,
+		project: options.project,
+		workspace: options.workspace,
+	};
 	const replayLimit = options.replayLimit ?? 2000;
-
-	const allTimeCounts = new Map(auditLog.matchedRuleCounts({}).map((row) => [row.matchedRule, row]));
-	const windowCounts = new Map(auditLog.matchedRuleCounts(filter).map((row) => [row.matchedRule, row]));
-
-	const rulePatterns = Object.entries(manifest.rules);
+	const workspace = resolveAnalysisWorkspace(manifest, options.workspace);
+	const allTimeRows = auditLog.matchedRuleCounts(workspace ? { workspace: workspace.id } : {});
+	const allTimeCounts = matchedRuleCountMap(allTimeRows, workspace?.id);
+	const windowCounts = matchedRuleCountMap(auditLog.matchedRuleCounts(filter), workspace?.id);
+	const analyzedRules = workspace?.rules ?? manifest.rules;
+	const rulePatterns = Object.entries(analyzedRules);
 
 	// Empirical shadow detection: replay recent history and record cases where
 	// a rule would have matched but an earlier rule consumed the call.
-	const shadowedBy = new Map<string, string>();
 	const replayEntries = auditLog.listRecentFiltered(filter, replayLimit);
-	for (const entry of replayEntries) {
-		const { winner, matching } = replayEntry(entry, manifest.rules);
-		if (winner === undefined) continue;
-		for (const pattern of matching) {
-			if (pattern !== winner && !shadowedBy.has(pattern)) {
-				shadowedBy.set(pattern, winner);
-			}
-		}
-	}
+	const shadowedBy = empiricalShadows(replayEntries, analyzedRules);
 
 	// Static shadow detection: a wildcard-free rule whose literal text an
 	// earlier rule already matches can never win.
-	for (let i = 0; i < rulePatterns.length; i += 1) {
-		const [pattern] = rulePatterns[i] as [string, Manifest['rules'][string]];
-		if (shadowedBy.has(pattern) || !isWildcardFree(pattern)) continue;
-
-		for (let j = 0; j < i; j += 1) {
-			const [earlier] = rulePatterns[j] as [string, Manifest['rules'][string]];
-			if (matchesPattern(pattern, earlier)) {
-				shadowedBy.set(pattern, earlier);
-				break;
-			}
-		}
-	}
-
-	const rules: RuleFinding[] = rulePatterns.map(([pattern, decision]) => {
-		const allTime = allTimeCounts.get(pattern);
-		const inWindow = windowCounts.get(pattern);
-		const invalidNote = invalidRegexNote(pattern);
-
-		let status: RuleFinding['status'] = 'active';
-		let note: string | undefined;
-
-		if (invalidNote !== undefined) {
-			status = 'invalid';
-			note = `regex fails to compile: ${invalidNote}`;
-		} else if ((allTime?.count ?? 0) === 0 && shadowedBy.has(pattern)) {
-			status = 'shadowed';
-		} else if ((allTime?.count ?? 0) === 0) {
-			status = 'dead';
-		} else if ((inWindow?.count ?? 0) === 0) {
-			status = 'stale';
-		}
-
-		return {
-			pattern,
-			decision,
-			matchCount: inWindow?.count ?? 0,
-			matchCountAllTime: allTime?.count ?? 0,
-			lastMatched: allTime?.lastMatched,
-			status,
-			shadowedBy: status === 'shadowed' ? shadowedBy.get(pattern) : undefined,
-			note,
-		};
-	});
+	addStaticShadows(rulePatterns, shadowedBy);
+	const rules = rulePatterns.map((entry) => ruleFinding(entry, workspace?.id, allTimeCounts, windowCounts, shadowedBy));
 
 	const approvalHotspots = auditLog.approvalHotspots(filter);
 
-	const minedSuggestions = suggestRules(manifest, auditLog, {
-		...filter,
-		minOccurrences: options.minOccurrences,
-		replayLimit,
-	});
+	const minedSuggestions = suggestRules(
+		manifest,
+		auditLog,
+		{
+			...filter,
+			minOccurrences: options.minOccurrences,
+			replayLimit,
+		},
+		replayEntries
+	);
 
 	const hygieneSuggestions: RuleSuggestion[] = rules
 		.filter((finding) => finding.status === 'dead' || finding.status === 'invalid' || finding.status === 'shadowed')
-		.map((finding) => ({
-			pattern: finding.pattern,
-			decision: finding.decision,
-			kind:
-				finding.status === 'invalid'
-					? 'fix-invalid'
-					: finding.status === 'shadowed'
-						? 'reorder-shadowed'
-						: 'remove-dead',
-			rationale:
-				finding.status === 'invalid'
-					? `${finding.note ?? 'invalid regex'} — this rule silently never matches`
-					: finding.status === 'shadowed'
-						? `never wins: earlier rule "${finding.shadowedBy}" captures its matches first`
-						: 'never matched any recorded tool call',
-			evidence: {
-				occurrences: finding.matchCountAllTime,
-				approvedCount: 0,
-				deniedCount: 0,
-				distinctCommands: 0,
-				sampleCommands: [],
-			},
-			conflicts: [],
-		}));
+		.map(hygieneSuggestion);
 
 	const suggestions = [...minedSuggestions, ...hygieneSuggestions];
 
 	return {
 		window,
+		workspaceId: workspace?.id,
 		rules,
 		approvalHotspots,
 		suggestions,
-		tomlSnippet: renderTomlSnippet(suggestions, window),
+		tomlSnippet: renderTomlSnippet(suggestions, window, workspace?.id),
 	};
 }

@@ -52,11 +52,14 @@ function rowToAuditEntry(row: Record<string, unknown>): AuditEntry {
 		command: String(row.command),
 		args: safeJsonParse<string[]>(row.args_json, []),
 		workingDirectory: optionalString(row.working_directory),
+		workspaceId: optionalString(row.workspace_id),
 		inputs: safeJsonParse<Record<string, unknown>>(row.inputs_json, {}),
 		timestamp: String(row.timestamp),
 		decision: enumValue(row.decision, VALID_DECISIONS, 'decision in audit log row'),
 		classification: enumValue(row.classification, VALID_CLASSIFICATIONS, 'classification in audit log row'),
 		matchedRule: optionalString(row.matched_rule),
+		policyScope: optionalString(row.policy_scope) as AuditEntry['policyScope'],
+		resolvedWorkspaceId: optionalString(row.resolved_workspace_id),
 		reason: String(row.reason),
 		sessionId: optionalString(row.session_id),
 		toolUseId: optionalString(row.tool_use_id),
@@ -69,6 +72,35 @@ function rowToAuditEntryWithApproval(row: Record<string, unknown>): AuditEntry {
 		approvalStatus: optionalString(row.approval_status) as ApprovalStatus | undefined,
 		approvalResolvedAt: optionalString(row.approval_resolved_at),
 	};
+}
+
+function nullable<T>(value: T | undefined): T | null {
+	return value === undefined ? null : value;
+}
+
+function jsonOr<T>(value: T | undefined, fallback: T): string {
+	return JSON.stringify(value === undefined ? fallback : value);
+}
+
+function auditEntryValues(call: ToolCall, result: EvaluationResult, timestamp: string): Array<string | null> {
+	return [
+		call.agent,
+		call.tool,
+		call.command,
+		jsonOr(call.args, []),
+		nullable(call.workingDirectory),
+		nullable(call.workspaceId),
+		jsonOr(call.inputs, {}),
+		timestamp,
+		result.decision,
+		result.classification,
+		nullable(result.matchedRule),
+		result.policyScope === undefined ? 'global' : result.policyScope,
+		nullable(result.resolvedWorkspaceId),
+		result.reason,
+		nullable(call.sessionId),
+		nullable(call.toolUseId),
+	];
 }
 
 export class AuditLogStore {
@@ -121,30 +153,16 @@ export class AuditLogStore {
 		const timestamp = call.timestamp ?? new Date().toISOString();
 		const insertEntry = this.database.query(
 			`INSERT INTO audit_log (
-        agent, tool, command, args_json, working_directory, inputs_json, timestamp,
-        decision, classification, matched_rule, reason, session_id, tool_use_id
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`
+        agent, tool, command, args_json, working_directory, workspace_id, inputs_json, timestamp,
+        decision, classification, matched_rule, policy_scope, resolved_workspace_id, reason, session_id, tool_use_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`
 		);
 		const insertApproval = this.database.query(
 			'INSERT INTO approval_requests (audit_log_id, created_at) VALUES (?, ?) RETURNING id'
 		);
 
 		return this.database.transaction(() => {
-			const row = insertEntry.get(
-				call.agent,
-				call.tool,
-				call.command,
-				JSON.stringify(call.args ?? []),
-				call.workingDirectory ?? null,
-				JSON.stringify(call.inputs ?? {}),
-				timestamp,
-				result.decision,
-				result.classification,
-				result.matchedRule ?? null,
-				result.reason,
-				call.sessionId ?? null,
-				call.toolUseId ?? null
-			) as { id: number };
+			const row = insertEntry.get(...auditEntryValues(call, result, timestamp)) as { id: number };
 			let approvalRequestId: number | undefined;
 
 			if (result.decision === 'approve') {
@@ -157,8 +175,8 @@ export class AuditLogStore {
 	}
 
 	listRecent(limit?: number): AuditEntry[] {
-		let sql = `SELECT al.id, al.agent, al.tool, al.command, al.args_json, al.working_directory, al.inputs_json,
-                al.timestamp, al.decision, al.classification, al.matched_rule, al.reason,
+		let sql = `SELECT al.id, al.agent, al.tool, al.command, al.args_json, al.working_directory, al.workspace_id, al.inputs_json,
+                al.timestamp, al.decision, al.classification, al.matched_rule, al.policy_scope, al.resolved_workspace_id, al.reason,
                 al.session_id, al.tool_use_id,
                 ar.status AS approval_status, ar.resolved_at AS approval_resolved_at
          FROM audit_log al
@@ -176,8 +194,8 @@ export class AuditLogStore {
 		const { where, params } = this.buildFilter(filter, 'al');
 		const rows = this.database
 			.query(
-				`SELECT al.id, al.agent, al.tool, al.command, al.args_json, al.working_directory, al.inputs_json,
-                al.timestamp, al.decision, al.classification, al.matched_rule, al.reason,
+				`SELECT al.id, al.agent, al.tool, al.command, al.args_json, al.working_directory, al.workspace_id, al.inputs_json,
+                al.timestamp, al.decision, al.classification, al.matched_rule, al.policy_scope, al.resolved_workspace_id, al.reason,
                 al.session_id, al.tool_use_id,
                 ar.status AS approval_status, ar.resolved_at AS approval_resolved_at
          FROM audit_log al
@@ -214,9 +232,9 @@ export class AuditLogStore {
 		const rows = this.database
 			.query(
 				`SELECT ar.id AS approval_id, ar.audit_log_id, ar.status, ar.created_at, ar.resolved_at,
-                al.agent, al.tool, al.command, al.args_json, al.working_directory, al.inputs_json,
-                al.timestamp, al.decision, al.classification, al.matched_rule, al.reason,
-                al.session_id, al.tool_use_id
+	                al.agent, al.tool, al.command, al.args_json, al.working_directory, al.workspace_id, al.inputs_json,
+	                al.timestamp, al.decision, al.classification, al.matched_rule, al.policy_scope, al.resolved_workspace_id, al.reason,
+	                al.session_id, al.tool_use_id
          FROM approval_requests ar
          JOIN audit_log al ON al.id = ar.audit_log_id
          WHERE ar.status = 'pending'
@@ -246,6 +264,7 @@ export class AuditLogStore {
 			['timestamp', '<=', filter.until],
 			['agent', '=', filter.agent],
 			['working_directory', '=', filter.project],
+			['resolved_workspace_id', '=', filter.workspace],
 			['tool', '=', filter.tool],
 			['classification', '=', filter.classification],
 			['decision', '=', filter.decision],
@@ -273,7 +292,13 @@ export class AuditLogStore {
 		return this.database.query(buildSql(where)).all(...params, ...extraParams) as Array<Record<string, unknown>>;
 	}
 
-	usageTotals(filter: AuditFilter = {}): { entries: number; sessions: number; agents: string[]; projects: string[] } {
+	usageTotals(filter: AuditFilter = {}): {
+		entries: number;
+		sessions: number;
+		agents: string[];
+		projects: string[];
+		workspaces: string[];
+	} {
 		const { where, params } = this.buildFilter(filter);
 		const row = this.database
 			.query(
@@ -289,12 +314,18 @@ export class AuditLogStore {
 				`SELECT DISTINCT working_directory FROM audit_log ${where}${where ? ' AND' : ' WHERE'} working_directory IS NOT NULL ORDER BY working_directory`
 			)
 			.all(...params) as Array<{ working_directory: string }>;
+		const workspaces = this.database
+			.query(
+				`SELECT DISTINCT resolved_workspace_id FROM audit_log ${where}${where ? ' AND' : ' WHERE'} resolved_workspace_id IS NOT NULL ORDER BY resolved_workspace_id`
+			)
+			.all(...params) as Array<{ resolved_workspace_id: string }>;
 
 		return {
 			entries: row.entries,
 			sessions: row.sessions,
 			agents: agents.map((entry) => entry.agent),
 			projects: projects.map((entry) => entry.working_directory),
+			workspaces: workspaces.map((entry) => entry.resolved_workspace_id),
 		};
 	}
 
@@ -394,14 +425,22 @@ export class AuditLogStore {
 		const { where, params } = this.buildFilter(filter);
 		const rows = this.database
 			.query(
-				`SELECT matched_rule, COUNT(*) AS count, MAX(timestamp) AS last_matched
-         FROM audit_log ${where}${where ? ' AND' : ' WHERE'} matched_rule IS NOT NULL
-         GROUP BY matched_rule`
+				`SELECT matched_rule, policy_scope, resolved_workspace_id, COUNT(*) AS count, MAX(timestamp) AS last_matched
+	         FROM audit_log ${where}${where ? ' AND' : ' WHERE'} matched_rule IS NOT NULL
+	         GROUP BY matched_rule, policy_scope, resolved_workspace_id`
 			)
-			.all(...params) as Array<{ matched_rule: string; count: number; last_matched: string }>;
+			.all(...params) as Array<{
+			matched_rule: string;
+			policy_scope: 'global' | 'workspace' | null;
+			resolved_workspace_id: string | null;
+			count: number;
+			last_matched: string;
+		}>;
 
 		return rows.map((row) => ({
 			matchedRule: row.matched_rule,
+			policyScope: row.policy_scope ?? undefined,
+			resolvedWorkspaceId: row.resolved_workspace_id ?? undefined,
 			count: row.count,
 			lastMatched: row.last_matched,
 		}));
@@ -411,56 +450,76 @@ export class AuditLogStore {
 		const { where, params } = this.buildFilter(filter, 'al');
 		const rows = this.database
 			.query(
-				`SELECT al.tool,
-                CASE WHEN instr(al.command, ' ') > 0
-                     THEN substr(al.command, 1, instr(al.command, ' ') - 1)
-                     ELSE al.command END AS command_key,
-                COUNT(*) AS total,
-                SUM(CASE WHEN ar.status = 'approved' THEN 1 ELSE 0 END) AS approved,
-                SUM(CASE WHEN ar.status = 'denied' THEN 1 ELSE 0 END) AS denied,
-                SUM(CASE WHEN ar.status = 'pending' THEN 1 ELSE 0 END) AS pending,
-                AVG(CASE WHEN ar.resolved_at IS NOT NULL
-                    THEN (julianday(ar.resolved_at) - julianday(ar.created_at)) * 86400000.0
-                    ELSE NULL END) AS avg_resolution_ms
-         FROM audit_log al
-         JOIN approval_requests ar ON ar.audit_log_id = al.id
-         ${where}${where ? ' AND' : ' WHERE'} al.decision = 'approve'
-         GROUP BY al.tool, command_key
-         ORDER BY total DESC`
+				`WITH filtered AS (
+	           SELECT al.id, al.tool, al.command,
+	                  CASE WHEN instr(al.command, ' ') > 0
+	                       THEN substr(al.command, 1, instr(al.command, ' ') - 1)
+	                       ELSE al.command END AS command_key,
+	                  ar.status, ar.created_at, ar.resolved_at
+	           FROM audit_log al
+	           JOIN approval_requests ar ON ar.audit_log_id = al.id
+	           ${where}${where ? ' AND' : ' WHERE'} al.decision = 'approve'
+	         ),
+	         summaries AS (
+	           SELECT tool, command_key, COUNT(*) AS total,
+	                  SUM(CASE WHEN status = 'approved' THEN 1 ELSE 0 END) AS approved,
+	                  SUM(CASE WHEN status = 'denied' THEN 1 ELSE 0 END) AS denied,
+	                  SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) AS pending,
+	                  AVG(CASE WHEN resolved_at IS NOT NULL
+	                      THEN (julianday(resolved_at) - julianday(created_at)) * 86400000.0
+	                      ELSE NULL END) AS avg_resolution_ms
+	           FROM filtered
+	           GROUP BY tool, command_key
+	         ),
+	         ranked_samples AS (
+	           SELECT tool, command_key, command,
+	                  ROW_NUMBER() OVER (
+	                    PARTITION BY tool, command_key
+	                    ORDER BY MAX(id) DESC
+	                  ) AS sample_rank
+	           FROM filtered
+	           GROUP BY tool, command_key, command
+	         )
+	         SELECT summaries.*, ranked_samples.command AS sample_command
+	         FROM summaries
+	         LEFT JOIN ranked_samples
+	           ON ranked_samples.tool = summaries.tool
+	          AND ranked_samples.command_key = summaries.command_key
+	          AND ranked_samples.sample_rank <= ?
+	         ORDER BY summaries.total DESC, summaries.tool, summaries.command_key, ranked_samples.sample_rank`
 			)
-			.all(...params) as Array<Record<string, unknown>>;
+			.all(...params, Math.max(0, sampleLimit)) as Array<Record<string, unknown>>;
 
-		return rows.map((row) => {
-			const sampleRows = this.database
-				.query(
-					`SELECT DISTINCT command FROM audit_log
-           WHERE decision = 'approve' AND tool = ? AND
-                 (CASE WHEN instr(command, ' ') > 0
-                       THEN substr(command, 1, instr(command, ' ') - 1)
-                       ELSE command END) = ?
-           ORDER BY id DESC LIMIT ?`
-				)
-				.all(String(row.tool), String(row.command_key), sampleLimit) as Array<{ command: string }>;
-
-			return {
-				tool: String(row.tool),
-				commandKey: String(row.command_key),
+		const hotspots = new Map<string, ApprovalHotspot>();
+		for (const row of rows) {
+			const tool = String(row.tool);
+			const commandKey = String(row.command_key);
+			const key = JSON.stringify([tool, commandKey]);
+			const hotspot = hotspots.get(key) ?? {
+				tool,
+				commandKey,
 				total: Number(row.total),
 				approved: Number(row.approved),
 				denied: Number(row.denied),
 				pending: Number(row.pending),
 				avgResolutionMs: row.avg_resolution_ms === null ? undefined : Number(row.avg_resolution_ms),
-				sampleCommands: sampleRows.map((sample) => sample.command),
+				sampleCommands: [],
 			};
-		});
+			if (row.sample_command !== null && row.sample_command !== undefined) {
+				hotspot.sampleCommands.push(String(row.sample_command));
+			}
+			hotspots.set(key, hotspot);
+		}
+
+		return [...hotspots.values()];
 	}
 
 	unmatchedEntries(filter: AuditFilter = {}, limit = 2000): AuditEntry[] {
 		const { where, params } = this.buildFilter(filter, 'al');
 		const rows = this.database
 			.query(
-				`SELECT al.id, al.agent, al.tool, al.command, al.args_json, al.working_directory, al.inputs_json,
-                al.timestamp, al.decision, al.classification, al.matched_rule, al.reason,
+				`SELECT al.id, al.agent, al.tool, al.command, al.args_json, al.working_directory, al.workspace_id, al.inputs_json,
+                al.timestamp, al.decision, al.classification, al.matched_rule, al.policy_scope, al.resolved_workspace_id, al.reason,
                 al.session_id, al.tool_use_id,
                 ar.status AS approval_status, ar.resolved_at AS approval_resolved_at
          FROM audit_log al
@@ -502,14 +561,18 @@ export class AuditLogStore {
 		return row?.status;
 	}
 
-	resolveApprovalRequest(id: number, status: Exclude<ApprovalStatus, 'pending'>): boolean {
+	resolveApprovalRequest(
+		id: number,
+		status: Exclude<ApprovalStatus, 'pending'>,
+		resolvedAt = new Date().toISOString()
+	): boolean {
 		const result = this.database
 			.query(
 				`UPDATE approval_requests
          SET status = ?, resolved_at = ?
          WHERE id = ? AND status = 'pending'`
 			)
-			.run(status, new Date().toISOString(), id);
+			.run(status, resolvedAt, id);
 
 		return result.changes > 0;
 	}

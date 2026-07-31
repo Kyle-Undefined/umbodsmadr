@@ -100,6 +100,7 @@ export function normalizePayload(agent: string, payload: unknown, options: Norma
 		command,
 		args,
 		workingDirectory: options.workingDirectoryPaths ? firstString(payload, options.workingDirectoryPaths) : undefined,
+		workspaceId: firstString(payload, ['workspace_id', 'workspaceId', 'workspace.id']),
 		inputs: isRecord(payload) ? payload : { raw: payload },
 		timestamp: new Date().toISOString(),
 		sessionId: firstString(payload, ['session_id', 'sessionId', 'thread_id']),

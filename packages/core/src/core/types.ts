@@ -22,10 +22,22 @@ export interface ServerConfig {
 	port: number;
 }
 
+export interface WorkspaceConfig {
+	/** Opaque host-neutral policy scope identifier. */
+	id: string;
+	/** Optional absolute filesystem roots used when a caller does not provide workspaceId. */
+	roots: string[];
+	/** Workspace-specific fallback; inherits policy.default_unknown when omitted. */
+	default_unknown?: ApprovalDecision;
+	rules: Record<string, ApprovalDecision>;
+}
+
 export interface Manifest {
 	env: EnvConfig;
 	policy: PolicyConfig;
 	rules: Record<string, ApprovalDecision>;
+	/** Optional for compatibility with manifests created before workspace policy was introduced. */
+	workspaces?: WorkspaceConfig[];
 	server: ServerConfig;
 }
 
@@ -35,6 +47,8 @@ export interface ToolCall {
 	command: string;
 	args?: string[];
 	workingDirectory?: string;
+	/** Explicit host-selected policy scope. Opaque to Umbod. */
+	workspaceId?: string;
 	inputs?: Record<string, unknown>;
 	timestamp: string;
 	sessionId?: string;
@@ -45,6 +59,8 @@ export interface EvaluationResult {
 	decision: ApprovalDecision;
 	classification: CallClassification;
 	matchedRule?: string;
+	policyScope?: 'global' | 'workspace';
+	resolvedWorkspaceId?: string;
 	reason: string;
 }
 

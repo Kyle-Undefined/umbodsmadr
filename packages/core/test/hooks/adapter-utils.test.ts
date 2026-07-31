@@ -57,6 +57,11 @@ describe('normalizePayload', () => {
 		expect(call.workingDirectory).toBe('/home/user');
 	});
 
+	test('extracts a host-provided generic workspace id', () => {
+		const call = normalizePayload('test', { tool_name: 'bash', workspace: { id: 'strict-project' } }, baseOptions);
+		expect(call.workspaceId).toBe('strict-project');
+	});
+
 	test('preserves full payload as inputs', () => {
 		const payload = { tool_name: 'bash', tool_input: { command: 'ls' }, extra: 'data' };
 		const call = normalizePayload('test', payload, baseOptions);

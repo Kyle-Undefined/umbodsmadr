@@ -180,4 +180,31 @@ describe('analytics > rule suggestions', () => {
 		const suggestion = suggestRules(manifest, store).find((s) => s.pattern === 'git push *');
 		expect(suggestion?.conflicts.some((c) => c.includes('preempted'))).toBe(true);
 	});
+
+	test('scopes suggestions to a configured workspace', () => {
+		for (let i = 0; i < 5; i += 1) {
+			const { approvalRequestId } = store.append(
+				makeCall({
+					command: `git push origin branch-${i}`,
+					workspaceId: 'client',
+					workingDirectory: '/work/client',
+				}),
+				{
+					decision: 'approve',
+					classification: 'unknown',
+					policyScope: 'workspace',
+					resolvedWorkspaceId: 'client',
+					reason: 'workspace fallback',
+				}
+			);
+			if (approvalRequestId !== undefined) store.resolveApprovalRequest(approvalRequestId, 'approved');
+		}
+		const manifest = makeManifest({
+			workspaces: [{ id: 'client', roots: ['/work/client'], default_unknown: 'approve', rules: {} }],
+		});
+		const suggestion = suggestRules(manifest, store, { workspace: 'client' }).find(
+			(entry) => entry.pattern === 'git push *'
+		);
+		expect(suggestion).toMatchObject({ workspaceId: 'client', decision: 'allow' });
+	});
 });

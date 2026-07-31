@@ -16,14 +16,22 @@ export interface ServeOptions {
 
 type ActivitySocket = ServerWebSocket<undefined>;
 
-function parseLimitParam(url: URL): number | undefined {
+const DEFAULT_ACTIVITY_LIMIT = 200;
+const UI_ASSETS = new Map([
+	['/assets/alpine.js', { contents: alpineJs, contentType: 'application/javascript; charset=utf-8' }],
+	['/assets/dashboard.css', { contents: dashboardCss, contentType: 'text/css; charset=utf-8' }],
+	['/assets/dashboard.js', { contents: dashboardJs, contentType: 'application/javascript; charset=utf-8' }],
+]);
+
+function parseLimitParam(url: URL): number {
 	const str = url.searchParams.get('limit');
-	if (str === null) return undefined;
-	const n = Number.parseInt(str, 10);
-	return Number.isFinite(n) ? n : undefined;
+	if (str === null) return DEFAULT_ACTIVITY_LIMIT;
+	if (!/^\d+$/.test(str)) return DEFAULT_ACTIVITY_LIMIT;
+	const n = Number(str);
+	return Number.isSafeInteger(n) && n >= 0 ? n : DEFAULT_ACTIVITY_LIMIT;
 }
 
-function handleDashboard(umbod: Umbod, limit?: number): Response {
+function handleDashboard(umbod: Umbod, limit: number): Response {
 	const html = renderDashboard(
 		umbod.manifest,
 		umbod.auditLog.listRecent(limit),
@@ -34,6 +42,27 @@ function handleDashboard(umbod: Umbod, limit?: number): Response {
 	return new Response(html, {
 		headers: { 'content-type': 'text/html; charset=utf-8' },
 	});
+}
+
+function handleServerFetch(
+	req: Request,
+	server: Server<undefined>,
+	umbod: Umbod
+): Response | Promise<Response> | undefined {
+	const url = new URL(req.url);
+	if (url.pathname === '/ws') {
+		return server.upgrade(req) ? undefined : new Response('upgrade failed', { status: 500 });
+	}
+	const asset = req.method === 'GET' ? UI_ASSETS.get(url.pathname) : undefined;
+	if (asset) {
+		return new Response(asset.contents, {
+			headers: { 'content-type': asset.contentType },
+		});
+	}
+	if (req.method === 'GET' && url.pathname === '/') {
+		return handleDashboard(umbod, parseLimitParam(url));
+	}
+	return umbod.fetch(req) ?? new Response('not found', { status: 404 });
 }
 
 export interface ServeHandle {
@@ -67,36 +96,7 @@ export async function startHttpServer(options: ServeOptions): Promise<ServeHandl
 		hostname: options.host,
 		port: options.port,
 		fetch(req, serverInstance) {
-			const url = new URL(req.url);
-
-			if (url.pathname === '/ws') {
-				const upgraded = serverInstance.upgrade(req);
-				return upgraded ? undefined : new Response('upgrade failed', { status: 500 });
-			}
-
-			if (req.method === 'GET' && url.pathname === '/assets/alpine.js') {
-				return new Response(alpineJs, {
-					headers: { 'content-type': 'application/javascript; charset=utf-8' },
-				});
-			}
-
-			if (req.method === 'GET' && url.pathname === '/assets/dashboard.css') {
-				return new Response(dashboardCss, {
-					headers: { 'content-type': 'text/css; charset=utf-8' },
-				});
-			}
-
-			if (req.method === 'GET' && url.pathname === '/assets/dashboard.js') {
-				return new Response(dashboardJs, {
-					headers: { 'content-type': 'application/javascript; charset=utf-8' },
-				});
-			}
-
-			if (req.method === 'GET' && url.pathname === '/') {
-				return handleDashboard(umbod, parseLimitParam(url));
-			}
-
-			return umbod.fetch(req) ?? new Response('not found', { status: 404 });
+			return handleServerFetch(req, serverInstance, umbod);
 		},
 		websocket: {
 			open(socket) {

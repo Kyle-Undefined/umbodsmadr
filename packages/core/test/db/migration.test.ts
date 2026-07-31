@@ -96,6 +96,19 @@ function userVersion(path: string): number {
 	return user_version;
 }
 
+function indexNames(path: string): Set<string> {
+	const db = new Database(path);
+	const indexes = new Set(
+		(
+			db.query("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'audit_log'").all() as Array<{
+				name: string;
+			}>
+		).map((row) => row.name)
+	);
+	db.close();
+	return indexes;
+}
+
 beforeEach(() => {
 	tempDir = mkdtempSync(join(tmpdir(), 'umbod-migration-test-'));
 	dbPath = join(tempDir, 'test.db');
@@ -113,6 +126,12 @@ describe('audit log > migration', () => {
 		const columns = tableColumns(dbPath);
 		expect(columns.has('session_id')).toBe(true);
 		expect(columns.has('tool_use_id')).toBe(true);
+		expect(columns.has('workspace_id')).toBe(true);
+		expect(columns.has('policy_scope')).toBe(true);
+		expect(columns.has('resolved_workspace_id')).toBe(true);
+		const indexes = indexNames(dbPath);
+		expect(indexes.has('audit_log_workspace_timestamp_idx')).toBe(true);
+		expect(indexes.has('audit_log_approval_hotspot_idx')).toBe(true);
 		expect(userVersion(dbPath)).toBe(SCHEMA_VERSION);
 	});
 
@@ -156,13 +175,23 @@ describe('audit log > migration', () => {
 				timestamp: new Date().toISOString(),
 				sessionId: 'sess-new-1',
 				toolUseId: 'toolu_xyz',
+				workspaceId: 'client',
 			},
-			{ decision: 'allow', classification: 'readonly', reason: 'auto-allowed readonly tool call' }
+			{
+				decision: 'allow',
+				classification: 'readonly',
+				policyScope: 'workspace',
+				resolvedWorkspaceId: 'client',
+				reason: 'auto-allowed readonly tool call',
+			}
 		);
 		const [entry] = store.listRecent(1);
 		store.close();
 
 		expect(entry?.sessionId).toBe('sess-new-1');
 		expect(entry?.toolUseId).toBe('toolu_xyz');
+		expect(entry?.workspaceId).toBe('client');
+		expect(entry?.policyScope).toBe('workspace');
+		expect(entry?.resolvedWorkspaceId).toBe('client');
 	});
 });

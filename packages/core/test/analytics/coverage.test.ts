@@ -3,9 +3,9 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
-import { computeCoverage } from '../../src/analytics/coverage.ts';
+import { computeCoverage, scopeCoverageSources } from '../../src/analytics/coverage.ts';
 import { AuditLogStore } from '../../src/db/audit-log.ts';
-import { makeCall } from '../helpers.ts';
+import { makeCall, makeManifest } from '../helpers.ts';
 
 let tempDir: string;
 let store: AuditLogStore;
@@ -47,6 +47,59 @@ function toolRecord(timestamp: string, id: string, name: string, input: Record<s
 }
 
 describe('analytics > coverage', () => {
+	test('intersects workspace roots with host source boundaries and preserves exclusions', () => {
+		const manifest = makeManifest({
+			workspaces: [
+				{ id: 'selected', roots: ['/allowed/project'], rules: {} },
+				{ id: 'nested', roots: ['/allowed/project/packages/nested'], rules: {} },
+			],
+		});
+		const scoped = scopeCoverageSources(
+			manifest,
+			[
+				{
+					agent: 'claude',
+					projectRoots: ['/allowed'],
+					projectRootExclusions: ['/allowed/project/private'],
+				},
+				{ agent: 'codex', projectRoots: ['/other'] },
+			],
+			{ workspace: 'selected' }
+		);
+
+		expect(scoped).toEqual([
+			expect.objectContaining({
+				agent: 'claude',
+				projectRoots: ['/allowed'],
+				projectRootExclusions: ['/allowed/project/private'],
+				scopeProjectRoots: ['/allowed/project'],
+				competingProjectRoots: ['/allowed/project/packages/nested'],
+			}),
+		]);
+	});
+
+	test('keeps host source boundaries when an exact project disambiguates workspace coverage', () => {
+		const manifest = makeManifest({
+			workspaces: [{ id: 'explicit', roots: [], rules: {} }],
+		});
+		const scoped = scopeCoverageSources(
+			manifest,
+			[
+				{ agent: 'claude', projectRoots: ['/allowed'] },
+				{ agent: 'codex', project: '/different' },
+			],
+			{ workspace: 'explicit', project: '/allowed/project' }
+		);
+
+		expect(scoped).toEqual([
+			expect.objectContaining({
+				agent: 'claude',
+				project: '/allowed/project',
+				projectRoots: ['/allowed'],
+			}),
+		]);
+	});
+
 	test('matches exact ids, session command pairs, then timestamp heuristics without reusing audit rows', async () => {
 		append({
 			command: 'different command',

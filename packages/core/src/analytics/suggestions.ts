@@ -40,6 +40,19 @@ interface Cluster {
 	commands: Set<string>;
 }
 
+interface ClusterProposal {
+	decision: 'allow' | 'block';
+	kind: Extract<RuleSuggestion['kind'], 'promote-approved' | 'block-denied'>;
+}
+
+interface SuggestionContext {
+	manifest: Manifest;
+	workspaceId?: string;
+	minOccurrences: number;
+	blockedEntries: AuditEntry[];
+	replayEntries: AuditEntry[];
+}
+
 function projectImpact(
 	entries: AuditEntry[],
 	pattern: string,
@@ -95,22 +108,10 @@ export function clusterKey(entry: AuditEntry): string | undefined {
 	return undefined;
 }
 
-// fallow-ignore-next-line complexity -- staged mining, safety validation, and replay projection pipeline
-export function suggestRules(
-	manifest: Manifest,
-	auditLog: AuditLogStore,
-	options: SuggestRulesOptions = {}
-): RuleSuggestion[] {
-	const minOccurrences = options.minOccurrences ?? DEFAULT_MIN_OCCURRENCES;
-	const filter = { since: options.since, until: options.until, agent: options.agent, project: options.project };
-	const replayLimit = options.replayLimit ?? 2000;
-
-	// Mine calls that hit the approval queue without a rule match — the
-	// signal for "this keeps interrupting; write a rule for it".
-	const unmatched = auditLog.unmatchedEntries(filter, replayLimit).filter((entry) => entry.decision === 'approve');
-
+function buildClusters(entries: AuditEntry[]): Cluster[] {
 	const clusters = new Map<string, Cluster>();
-	for (const entry of unmatched) {
+	for (const entry of entries) {
+		if (entry.matchedRule !== undefined || entry.decision !== 'approve') continue;
 		const pattern = clusterKey(entry);
 		if (pattern === undefined) continue;
 
@@ -129,94 +130,136 @@ export function suggestRules(
 		if (entry.classification === 'destructive') cluster.destructive += 1;
 		clusters.set(pattern, cluster);
 	}
+	return [...clusters.values()];
+}
 
-	// Historical blocked calls, used to flag allow-suggestions that would
-	// flip a past block decision.
-	const blockedEntries = auditLog
-		.listRecentFiltered(filter, replayLimit)
-		.filter((entry) => entry.decision === 'block' || entry.approvalStatus === 'denied');
-	const replayEntries = auditLog.listRecentFiltered(filter, replayLimit);
+function dominantProposal(cluster: Cluster): ClusterProposal | undefined {
+	const resolved = cluster.approved + cluster.denied;
+	if (resolved === 0) return undefined;
+	if (cluster.approved / resolved >= PURITY_THRESHOLD) {
+		return { decision: 'allow', kind: 'promote-approved' };
+	}
+	return cluster.denied / resolved >= PURITY_THRESHOLD ? { decision: 'block', kind: 'block-denied' } : undefined;
+}
 
-	const suggestions: RuleSuggestion[] = [];
+function destructiveProposalIsSafe(cluster: Cluster, proposal: ClusterProposal, minOccurrences: number): boolean {
+	if (proposal.decision !== 'allow' || cluster.destructive === 0) return true;
+	return cluster.denied === 0 && cluster.entries.length >= minOccurrences * 2;
+}
 
-	for (const cluster of clusters.values()) {
-		const occurrences = cluster.entries.length;
-		if (occurrences < minOccurrences) continue;
+function clusterPatternIsValid(cluster: Cluster): boolean {
+	return cluster.entries.every((entry) =>
+		ruleMatchCandidates(entry).some((candidate) => matchesPattern(candidate, cluster.pattern))
+	);
+}
 
-		const resolved = cluster.approved + cluster.denied;
-		if (resolved === 0) continue;
+function clusterProposal(cluster: Cluster, minOccurrences: number): ClusterProposal | undefined {
+	if (cluster.entries.length < minOccurrences) return undefined;
+	const proposal = dominantProposal(cluster);
+	if (!proposal || !destructiveProposalIsSafe(cluster, proposal, minOccurrences)) return undefined;
+	return clusterPatternIsValid(cluster) ? proposal : undefined;
+}
 
-		let decision: 'allow' | 'block';
-		let kind: RuleSuggestion['kind'];
-		if (cluster.approved / resolved >= PURITY_THRESHOLD) {
-			decision = 'allow';
-			kind = 'promote-approved';
-		} else if (cluster.denied / resolved >= PURITY_THRESHOLD) {
-			decision = 'block';
-			kind = 'block-denied';
-		} else {
-			continue; // mixed outcomes stay in the hotspot report
+function preemptionConflict(cluster: Cluster, context: SuggestionContext): string | undefined {
+	const workspace = context.workspaceId
+		? context.manifest.workspaces?.find((entry) => entry.id === context.workspaceId)
+		: undefined;
+	const effectiveRuleSets = workspace ? [workspace.rules, context.manifest.rules] : [context.manifest.rules];
+	for (const [existing] of effectiveRuleSets.flatMap((rules) => Object.entries(rules))) {
+		if (matchesPattern(cluster.pattern.replace(/ \*$/, ''), existing)) {
+			return `preempted by existing rule "${existing}" — insert before it`;
 		}
+	}
+	return undefined;
+}
 
-		// Destructive calls only get an allow rule on overwhelming evidence.
-		if (decision === 'allow' && cluster.destructive > 0) {
-			if (cluster.denied > 0 || occurrences < minOccurrences * 2) {
-				continue;
-			}
-		}
+function clusterConflicts(cluster: Cluster, proposal: ClusterProposal, context: SuggestionContext): string[] {
+	const conflicts: string[] = [];
+	const preemption = preemptionConflict(cluster, context);
+	if (preemption) conflicts.push(preemption);
 
-		// Offline validation: the pattern must actually match its own cluster
-		// through the real candidate/matcher pipeline.
-		const matchesAll = cluster.entries.every((entry) =>
+	if (proposal.decision === 'allow') {
+		const flipped = context.blockedEntries.filter((entry) =>
 			ruleMatchCandidates(entry).some((candidate) => matchesPattern(candidate, cluster.pattern))
 		);
-		if (!matchesAll) continue;
-
-		const conflicts: string[] = [];
-
-		// An existing rule that matches the pattern's own text would preempt it.
-		for (const [existing] of Object.entries(manifest.rules)) {
-			if (matchesPattern(cluster.pattern.replace(/ \*$/, ''), existing)) {
-				conflicts.push(`preempted by existing rule "${existing}" — insert before it`);
-				break;
-			}
-		}
-
-		if (decision === 'allow') {
-			const flipped = blockedEntries.filter((entry) =>
-				ruleMatchCandidates(entry).some((candidate) => matchesPattern(candidate, cluster.pattern))
+		if (flipped.length > 0) {
+			conflicts.push(
+				`would allow ${flipped.length} call(s) that were previously blocked or denied (e.g. "${flipped[0]?.command}")`
 			);
-			if (flipped.length > 0) {
-				conflicts.push(
-					`would allow ${flipped.length} call(s) that were previously blocked or denied (e.g. "${flipped[0]?.command}")`
-				);
-			}
 		}
-
-		const rationale =
-			decision === 'allow'
-				? `${occurrences} approval prompts, ${cluster.approved} approved / ${cluster.denied} denied — promote to allow`
-				: `${occurrences} approval prompts, ${cluster.denied} denied / ${cluster.approved} approved — block outright`;
-
-		suggestions.push({
-			pattern: cluster.pattern,
-			decision,
-			kind,
-			rationale:
-				cluster.destructive > 0 && decision === 'allow'
-					? `${rationale} (includes ${cluster.destructive} destructive-classified call(s) — review carefully)`
-					: rationale,
-			evidence: {
-				occurrences,
-				approvedCount: cluster.approved,
-				deniedCount: cluster.denied,
-				distinctCommands: cluster.commands.size,
-				sampleCommands: [...cluster.commands].slice(0, SAMPLE_LIMIT),
-			},
-			conflicts,
-			impact: projectImpact(replayEntries, cluster.pattern, decision),
-		});
 	}
+	return conflicts;
+}
+
+function clusterRationale(cluster: Cluster, proposal: ClusterProposal): string {
+	const occurrences = cluster.entries.length;
+	const rationale =
+		proposal.decision === 'allow'
+			? `${occurrences} approval prompts, ${cluster.approved} approved / ${cluster.denied} denied — promote to allow`
+			: `${occurrences} approval prompts, ${cluster.denied} denied / ${cluster.approved} approved — block outright`;
+	return cluster.destructive > 0 && proposal.decision === 'allow'
+		? `${rationale} (includes ${cluster.destructive} destructive-classified call(s) — review carefully)`
+		: rationale;
+}
+
+function suggestionForCluster(cluster: Cluster, context: SuggestionContext): RuleSuggestion | undefined {
+	const proposal = clusterProposal(cluster, context.minOccurrences);
+	if (!proposal) return undefined;
+	return {
+		pattern: cluster.pattern,
+		decision: proposal.decision,
+		workspaceId: context.workspaceId,
+		kind: proposal.kind,
+		rationale: clusterRationale(cluster, proposal),
+		evidence: {
+			occurrences: cluster.entries.length,
+			approvedCount: cluster.approved,
+			deniedCount: cluster.denied,
+			distinctCommands: cluster.commands.size,
+			sampleCommands: [...cluster.commands].slice(0, SAMPLE_LIMIT),
+		},
+		conflicts: clusterConflicts(cluster, proposal, context),
+		impact: projectImpact(context.replayEntries, cluster.pattern, proposal.decision),
+	};
+}
+
+export function suggestRules(
+	manifest: Manifest,
+	auditLog: AuditLogStore,
+	options: SuggestRulesOptions = {},
+	preloadedEntries?: AuditEntry[]
+): RuleSuggestion[] {
+	const minOccurrences = options.minOccurrences ?? DEFAULT_MIN_OCCURRENCES;
+	const filter = {
+		since: options.since,
+		until: options.until,
+		agent: options.agent,
+		project: options.project,
+		workspace: options.workspace,
+	};
+	const replayLimit = options.replayLimit ?? 2000;
+	const workspace = options.workspace
+		? manifest.workspaces?.find((entry) => entry.id === options.workspace)
+		: undefined;
+	if (options.workspace !== undefined && workspace === undefined) {
+		throw new Error(`workspace "${options.workspace}" is not configured`);
+	}
+	const replayEntries = preloadedEntries ?? auditLog.listRecentFiltered(filter, replayLimit);
+	const clusterEntries = preloadedEntries ?? auditLog.unmatchedEntries(filter, replayLimit);
+	const blockedEntries = replayEntries.filter(
+		(entry) => entry.decision === 'block' || entry.approvalStatus === 'denied'
+	);
+	const context: SuggestionContext = {
+		manifest,
+		workspaceId: workspace?.id,
+		minOccurrences,
+		blockedEntries,
+		replayEntries,
+	};
+	const suggestions = buildClusters(clusterEntries).flatMap((cluster) => {
+		const suggestion = suggestionForCluster(cluster, context);
+		return suggestion ? [suggestion] : [];
+	});
 
 	return suggestions.sort((a, b) => b.evidence.occurrences - a.evidence.occurrences);
 }

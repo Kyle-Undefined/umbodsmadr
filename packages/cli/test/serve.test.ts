@@ -73,6 +73,7 @@ describe('HTTP > GET', () => {
 		expect(body.env.name).toBe('test');
 		expect(body.policy.default_unknown).toBe('block');
 		expect(body.rules).toBeDefined();
+		expect(body.workspaces).toEqual([]);
 	});
 
 	test('GET /api/activity returns array', async () => {
@@ -80,6 +81,58 @@ describe('HTTP > GET', () => {
 		expect(res.status).toBe(200);
 		const body = await res.json();
 		expect(Array.isArray(body)).toBe(true);
+	});
+
+	test('activity endpoints bound defaults and preserve explicit limits', async () => {
+		for (let index = 0; index < 205; index += 1) {
+			auditLog.append(
+				{
+					agent: 'limit-test',
+					tool: 'bash',
+					command: `echo ${index}`,
+					timestamp: new Date().toISOString(),
+				},
+				{
+					decision: 'allow',
+					classification: 'readonly',
+					reason: 'test fixture',
+				}
+			);
+		}
+
+		const activity = await fetch(`${baseUrl}/api/activity`).then((response) => response.json());
+		expect(activity).toHaveLength(200);
+
+		const explicitActivity = await fetch(`${baseUrl}/api/activity?limit=3`).then((response) => response.json());
+		expect(explicitActivity).toHaveLength(3);
+
+		for (const invalidLimit of ['-1', '3x', '1.5']) {
+			const invalidActivity = await fetch(`${baseUrl}/api/activity?limit=${invalidLimit}`).then((response) =>
+				response.json()
+			);
+			expect(invalidActivity).toHaveLength(200);
+		}
+
+		const defaultDashboard = await fetch(`${baseUrl}/`).then((response) => response.text());
+		const defaultBootstrap = defaultDashboard.match(
+			/<script id="umbod-bootstrap" type="application\/json">(.*?)<\/script>/s
+		);
+		expect(defaultBootstrap).not.toBeNull();
+		expect(JSON.parse(defaultBootstrap![1]).entries).toHaveLength(200);
+
+		const explicitDashboard = await fetch(`${baseUrl}/?limit=3`).then((response) => response.text());
+		const explicitBootstrap = explicitDashboard.match(
+			/<script id="umbod-bootstrap" type="application\/json">(.*?)<\/script>/s
+		);
+		expect(explicitBootstrap).not.toBeNull();
+		expect(JSON.parse(explicitBootstrap![1]).entries).toHaveLength(3);
+
+		const invalidDashboard = await fetch(`${baseUrl}/?limit=3x`).then((response) => response.text());
+		const invalidBootstrap = invalidDashboard.match(
+			/<script id="umbod-bootstrap" type="application\/json">(.*?)<\/script>/s
+		);
+		expect(invalidBootstrap).not.toBeNull();
+		expect(JSON.parse(invalidBootstrap![1]).entries).toHaveLength(200);
 	});
 
 	test('GET /api/approvals returns array', async () => {
@@ -273,6 +326,9 @@ describe('HTTP > approval actions', () => {
 		const body = await res.json();
 		expect(body.ok).toBe(true);
 		expect(body.status).toBe('approved');
+		expect(typeof body.resolvedAt).toBe('string');
+		const [activity] = await fetch(`${baseUrl}/api/activity?limit=1`).then((response) => response.json());
+		expect(activity.approvalResolvedAt).toBe(body.resolvedAt);
 	});
 
 	test('deny resolves a pending request', async () => {

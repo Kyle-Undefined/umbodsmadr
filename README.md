@@ -36,11 +36,39 @@ approval_method = "web"  # or "cli" or "both"
 "* --force" = "approve"
 # Hidden file blocking, matches on Bash and Tool calls
 '/(^|\/)\.[^\s\/]+/' = "block"
+
+[[workspaces]]
+id = "client-production"
+roots = ["/work/client-app", "C:\\work\\client-app"]
+default_unknown = "block"
+
+[workspaces.rules]
+"git push *" = "block"
+"terraform plan *" = "approve"
 ```
 
 Rules are either wildcard patterns (`rm *`, `* --force`) or regex (`/^pattern$/flags`). First match wins. Anything unmatched falls back to `default_unknown`. Changing the manifest requires a restart.
 
 The audit database lives next to the manifest as `umbod.envName.db`.
+
+## workspaces
+
+A workspace is a named policy scope. It can represent a repository, IDE workspace, client environment, container, or any other boundary meaningful to the host. It is not tied to a particular agent or application.
+
+Embedded hosts can set `workspaceId` on a tool call. Generated hooks also read `workspace_id`, `workspaceId`, or `workspace.id` when the provider includes one. When no ID is supplied, Umbod uses `workingDirectory` and selects the workspace with the longest matching root.
+
+Resolution is deterministic:
+
+1. A known explicit workspace ID wins.
+2. With no ID, or with an unknown ID, the longest matching filesystem root wins.
+3. An unknown ID with no matching root is blocked.
+4. With no ID and no matching root, global policy applies.
+
+When an unknown ID resolves through cwd, Umbod records both the requested ID and the resolved workspace. If neither form of workspace identity resolves, Umbod fails closed instead of letting the call inherit global policy.
+
+Workspace rules run before global rules, so they can deliberately make a global decision stricter or more relaxed. If neither layer matches, the workspace's `default_unknown` is used when present, otherwise the global default applies. `approval_method` remains global because it controls how the Umbod service obtains approvals.
+
+Roots are optional. A host can use a purely conceptual workspace by sending its ID directly. Multiple absolute roots may be listed as aliases for native Windows, WSL, containers, or additional checkouts. Duplicate normalized roots are rejected, while nested roots are allowed and select the most specific workspace.
 
 ## agents
 
@@ -111,6 +139,15 @@ const umbod = createUmbod({
 	manifest,
 	dbPath: 'umbod.dev.db',
 	onActivity: (entry) => console.log(entry),
+});
+
+const result = await umbod.authorize({
+	agent: 'my-host',
+	tool: 'bash',
+	command: 'git push origin main',
+	workingDirectory: '/work/client-app',
+	workspaceId: 'client-production',
+	timestamp: new Date().toISOString(),
 });
 
 Bun.serve({ port: 9090, fetch: (req) => umbod.fetch(req) ?? new Response('not found', { status: 404 }) });

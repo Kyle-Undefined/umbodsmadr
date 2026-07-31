@@ -1,8 +1,6 @@
-import { homedir } from 'node:os';
-import path from 'node:path';
-
 import { normalizeHookTimeoutSeconds, type HookAdapter } from './base.ts';
-import { buildCurlWrapperScript, buildPowerShellWrapperScript, normalizePayload } from '../hooks/adapter-utils.ts';
+import { hookInstallScaffold } from './install.ts';
+import { normalizePayload } from '../hooks/adapter-utils.ts';
 
 export const claudeAdapter: HookAdapter = {
 	id: 'claude',
@@ -20,25 +18,10 @@ export const claudeAdapter: HookAdapter = {
 		});
 	},
 	install(options) {
-		const isWindows = options.platform ? options.platform === 'windows' : process.platform === 'win32';
-		const targetPath = isWindows ? path.win32 : path.posix;
-		const targetHome = options.homeDir ?? homedir();
-		const scriptFile = isWindows ? 'hook-claude.ps1' : 'hook-claude.sh';
-		const scriptPath = targetPath.join(options.outputDir, scriptFile);
+		const { targetPath, targetHome, command, asset } = hookInstallScaffold(options, 'claude', 'codex');
 		const timeoutSeconds = normalizeHookTimeoutSeconds(options.timeoutSeconds);
-		const command = isWindows
-			? `powershell.exe -NonInteractive -ExecutionPolicy Bypass -File "${scriptPath}"`
-			: scriptPath;
 		return {
-			assets: [
-				{
-					relativePath: scriptFile,
-					contents: isWindows
-						? buildPowerShellWrapperScript(options.url, 'claude', 'codex')
-						: buildCurlWrapperScript(options.url, 'claude', 'codex'),
-					executable: !isWindows,
-				},
-			],
+			assets: [asset],
 			config: {
 				fileName: 'claude.json',
 				settingsPath: targetPath.join(targetHome, '.claude', 'settings.json'),
