@@ -70,6 +70,11 @@ export interface AuditEntry extends ToolCall, EvaluationResult {
 	approvalResolvedAt?: string;
 }
 
+/** An audit entry read back from persistent storage. */
+export interface StoredAuditEntry extends AuditEntry {
+	id: number;
+}
+
 export interface ApprovalRequest {
 	id: number;
 	auditLogId: number;

@@ -238,3 +238,86 @@ describe('audit log > multiple approvals', () => {
 		expect(store.listPendingApprovals(3)).toHaveLength(3);
 	});
 });
+
+describe('audit log > folded search', () => {
+	test('matches case, accents, combining marks, and non-decomposing Latin letters', () => {
+		for (const command of ['Grímr inspect', 'Cafe\u0301 status', 'smørrebrød make', 'Straße check', 'Ægir run']) {
+			store.append(makeCall({ command }), makeResult());
+		}
+
+		expect(store.listRecentPage({ search: 'grimr' }, 1, 20).entries.map((entry) => entry.command)).toEqual([
+			'Grímr inspect',
+		]);
+		expect(store.listRecentPage({ search: 'CAFÉ' }, 1, 20).entries.map((entry) => entry.command)).toEqual([
+			'Cafe\u0301 status',
+		]);
+		expect(store.listRecentPage({ search: 'smorrebrod' }, 1, 20).entries.map((entry) => entry.command)).toEqual([
+			'smørrebrød make',
+		]);
+		expect(store.listRecentPage({ search: 'strasse' }, 1, 20).entries.map((entry) => entry.command)).toEqual([
+			'Straße check',
+		]);
+		expect(store.listRecentPage({ search: 'aegir' }, 1, 20).entries.map((entry) => entry.command)).toEqual([
+			'Ægir run',
+		]);
+	});
+
+	test('treats percent, underscore, quotes, and short searches literally', () => {
+		store.append(makeCall({ command: 'printf 100%_done' }), makeResult());
+		store.append(makeCall({ command: 'printf 100xxdone' }), makeResult());
+		store.append(makeCall({ command: 'say "hello"' }), makeResult());
+
+		expect(store.listRecentPage({ search: '%_' }, 1, 20).entries.map((entry) => entry.command)).toEqual([
+			'printf 100%_done',
+		]);
+		expect(store.listRecentPage({ search: '"hello"' }, 1, 20).entries.map((entry) => entry.command)).toEqual([
+			'say "hello"',
+		]);
+	});
+});
+
+describe('audit log > cursor calls', () => {
+	test('pages by descending id without duplicates when newer calls arrive', () => {
+		for (let index = 1; index <= 6; index += 1) {
+			store.append(makeCall({ command: `command-${index}` }), makeResult());
+		}
+
+		const first = store.listRecentCursor({}, { pageSize: 2, projection: 'summary', includeTotal: false });
+		expect(first.entries.map((entry) => entry.command)).toEqual(['command-6', 'command-5']);
+		expect(first).toMatchObject({ pageSize: 2, hasMore: true });
+		expect(first.nextCursor).toBe(String(first.entries[1]?.id));
+		expect(first.total).toBeUndefined();
+		expect(first.totalPages).toBeUndefined();
+		expect('args' in (first.entries[0] ?? {})).toBe(false);
+		expect('inputs' in (first.entries[0] ?? {})).toBe(false);
+		expect('reason' in (first.entries[0] ?? {})).toBe(false);
+
+		store.append(makeCall({ command: 'concurrent-newer' }), makeResult());
+		const second = store.listRecentCursor({}, { cursor: Number(first.nextCursor), pageSize: 3, projection: 'summary' });
+		expect(second.entries.map((entry) => entry.command)).toEqual(['command-4', 'command-3', 'command-2']);
+		expect(second.nextCursor).toBe(String(second.entries[2]?.id));
+
+		const final = store.listRecentCursor(
+			{},
+			{ cursor: Number(second.nextCursor), pageSize: 3, projection: 'summary', includeTotal: true }
+		);
+		expect(final.entries.map((entry) => entry.command)).toEqual(['command-1']);
+		expect(final).toMatchObject({ hasMore: false, nextCursor: null, total: 7, totalPages: 3 });
+	});
+
+	test('loads full detail separately', () => {
+		const { entryId } = store.append(
+			makeCall({ command: 'git status', args: ['--short'], inputs: { source: 'test' } }),
+			makeResult({ reason: 'detail reason' })
+		);
+
+		expect(store.getEntry(entryId)).toMatchObject({
+			id: entryId,
+			command: 'git status',
+			args: ['--short'],
+			inputs: { source: 'test' },
+			reason: 'detail reason',
+		});
+		expect(store.getEntry(entryId + 1)).toBeUndefined();
+	});
+});

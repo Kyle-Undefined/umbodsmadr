@@ -1,5 +1,5 @@
 import type { AuditEntry, Manifest, WorkspaceConfig } from '../core/types.ts';
-import type { AuditLogStore } from '../db/audit-log.ts';
+import type { AuditLogReader } from '../db/audit-log.ts';
 import { matchesPattern } from '../policy/rule-matcher.ts';
 import { ruleMatchCandidates } from '../policy/rule-candidates.ts';
 import { renderTomlSnippet } from './toml.ts';
@@ -7,6 +7,8 @@ import { suggestRules } from './suggestions.ts';
 import type { AuditFilter, RuleAnalysis, RuleFinding, RuleSuggestion } from './types.ts';
 
 export interface RuleAnalysisOptions extends AuditFilter {
+	/** Summary returns rule health without hotspots, suggestions, or TOML detail. */
+	projection?: 'full' | 'summary';
 	/** Minimum cluster size before a rule suggestion qualifies. Default 5. */
 	minOccurrences?: number;
 	/** Cap on audit entries replayed for empirical shadow detection and validation. Default 2000. */
@@ -60,7 +62,7 @@ function replayEntry(entry: AuditEntry, rules: Manifest['rules']): { winner?: st
 	return { winner, matching };
 }
 
-type MatchedRuleRow = ReturnType<AuditLogStore['matchedRuleCounts']>[number];
+type MatchedRuleRow = ReturnType<AuditLogReader['matchedRuleCounts']>[number];
 
 function resolveAnalysisWorkspace(manifest: Manifest, workspaceId: string | undefined): WorkspaceConfig | undefined {
 	if (workspaceId === undefined) return undefined;
@@ -189,7 +191,7 @@ function hygieneSuggestion(finding: RuleFinding): RuleSuggestion {
 
 export function analyzeRules(
 	manifest: Manifest,
-	auditLog: AuditLogStore,
+	auditLog: AuditLogReader,
 	options: RuleAnalysisOptions = {}
 ): RuleAnalysis {
 	const window = { since: options.since, until: options.until };
@@ -203,20 +205,39 @@ export function analyzeRules(
 	const workspace = resolveAnalysisWorkspace(manifest, options.workspace);
 	const allTimeRows = auditLog.matchedRuleCounts(workspace ? { workspace: workspace.id } : {});
 	const allTimeCounts = matchedRuleCountMap(allTimeRows, workspace?.id);
-	const windowCounts = matchedRuleCountMap(auditLog.matchedRuleCounts(filter), workspace?.id);
+	const windowMatchesAllTime =
+		options.since === undefined &&
+		options.until === undefined &&
+		options.agent === undefined &&
+		options.project === undefined;
+	const windowRows = windowMatchesAllTime ? allTimeRows : auditLog.matchedRuleCounts(filter);
+	const windowCounts = matchedRuleCountMap(windowRows, workspace?.id);
 	const analyzedRules = workspace?.rules ?? manifest.rules;
 	const rulePatterns = Object.entries(analyzedRules);
 
 	// Empirical shadow detection: replay recent history and record cases where
 	// a rule would have matched but an earlier rule consumed the call.
-	const replayEntries = auditLog.listRecentFiltered(filter, replayLimit);
+	const replayEntries =
+		options.projection !== 'summary' || rulePatterns.length > 0 ? auditLog.listRecentFiltered(filter, replayLimit) : [];
 	const shadowedBy = empiricalShadows(replayEntries, analyzedRules);
 
 	// Static shadow detection: a wildcard-free rule whose literal text an
 	// earlier rule already matches can never win.
 	addStaticShadows(rulePatterns, shadowedBy);
 	const rules = rulePatterns.map((entry) => ruleFinding(entry, workspace?.id, allTimeCounts, windowCounts, shadowedBy));
+	if (options.projection === 'summary') {
+		return {
+			projection: 'summary',
+			window,
+			workspaceId: workspace?.id,
+			rules,
+			approvalHotspots: [],
+			suggestions: [],
+			tomlSnippet: '',
+		};
+	}
 
+	const clusterEntries = auditLog.unmatchedEntries(filter, replayLimit);
 	const approvalHotspots = auditLog.approvalHotspots(filter);
 
 	const minedSuggestions = suggestRules(
@@ -227,7 +248,7 @@ export function analyzeRules(
 			minOccurrences: options.minOccurrences,
 			replayLimit,
 		},
-		replayEntries
+		{ replayEntries, clusterEntries }
 	);
 
 	const hygieneSuggestions: RuleSuggestion[] = rules
@@ -237,6 +258,7 @@ export function analyzeRules(
 	const suggestions = [...minedSuggestions, ...hygieneSuggestions];
 
 	return {
+		projection: 'full',
 		window,
 		workspaceId: workspace?.id,
 		rules,

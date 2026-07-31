@@ -10,7 +10,37 @@ import type { Manifest, ToolCall } from '../../src/core/types.ts';
 import { makeCall, makeManifest } from '../helpers.ts';
 
 let tempDir: string;
-let store: AuditLogStore;
+
+class CountingAuditLogStore extends AuditLogStore {
+	matchedRuleCountsCalls = 0;
+	unmatchedEntriesCalls = 0;
+	approvalHotspotsCalls = 0;
+
+	override matchedRuleCounts(
+		filter: Parameters<AuditLogStore['matchedRuleCounts']>[0] = {}
+	): ReturnType<AuditLogStore['matchedRuleCounts']> {
+		this.matchedRuleCountsCalls += 1;
+		return super.matchedRuleCounts(filter);
+	}
+
+	override unmatchedEntries(
+		filter: Parameters<AuditLogStore['unmatchedEntries']>[0] = {},
+		limit?: number
+	): ReturnType<AuditLogStore['unmatchedEntries']> {
+		this.unmatchedEntriesCalls += 1;
+		return super.unmatchedEntries(filter, limit);
+	}
+
+	override approvalHotspots(
+		filter: Parameters<AuditLogStore['approvalHotspots']>[0] = {},
+		sampleLimit?: number
+	): ReturnType<AuditLogStore['approvalHotspots']> {
+		this.approvalHotspotsCalls += 1;
+		return super.approvalHotspots(filter, sampleLimit);
+	}
+}
+
+let store: CountingAuditLogStore;
 
 /** Evaluates through the real engine so matched_rule reflects actual behavior. */
 function record(manifest: Manifest, call: Partial<ToolCall>): number | undefined {
@@ -22,7 +52,7 @@ function record(manifest: Manifest, call: Partial<ToolCall>): number | undefined
 
 beforeEach(() => {
 	tempDir = mkdtempSync(join(tmpdir(), 'umbod-rule-analysis-test-'));
-	store = new AuditLogStore(join(tempDir, 'test.db'));
+	store = new CountingAuditLogStore(join(tempDir, 'test.db'));
 });
 
 afterEach(() => {
@@ -39,6 +69,7 @@ describe('analytics > rule analysis', () => {
 
 		expect(analysis.rules.find((rule) => rule.pattern === 'git *')?.status).toBe('active');
 		expect(analysis.rules.find((rule) => rule.pattern === 'docker *')?.status).toBe('dead');
+		expect(store.matchedRuleCountsCalls).toBe(1);
 	});
 
 	test('marks rules stale when unmatched inside the window', () => {
@@ -51,6 +82,36 @@ describe('analytics > rule analysis', () => {
 		expect(finding?.status).toBe('stale');
 		expect(finding?.matchCountAllTime).toBe(1);
 		expect(finding?.matchCount).toBe(0);
+		expect(store.matchedRuleCountsCalls).toBe(2);
+	});
+
+	test('summary projection skips hotspot and suggestion detail', () => {
+		const manifest = makeManifest({ rules: { 'git *': 'allow' } });
+		record(manifest, { command: 'git status' });
+
+		const analysis = analyzeRules(manifest, store, { projection: 'summary' });
+
+		expect(analysis.projection).toBe('summary');
+		expect(analysis.rules[0]).toMatchObject({ pattern: 'git *', status: 'active' });
+		expect(analysis.approvalHotspots).toEqual([]);
+		expect(analysis.suggestions).toEqual([]);
+		expect(analysis.tomlSnippet).toBe('');
+		expect(store.unmatchedEntriesCalls).toBe(0);
+		expect(store.approvalHotspotsCalls).toBe(0);
+	});
+
+	test('keeps all-time rule counts outside an agent-filtered window', () => {
+		const manifest = makeManifest({ rules: { 'git *': 'allow' } });
+		record(manifest, { agent: 'claude', command: 'git status' });
+
+		const analysis = analyzeRules(manifest, store, { agent: 'codex' });
+
+		expect(analysis.rules.find((rule) => rule.pattern === 'git *')).toMatchObject({
+			status: 'stale',
+			matchCountAllTime: 1,
+			matchCount: 0,
+		});
+		expect(store.matchedRuleCountsCalls).toBe(2);
 	});
 
 	test('flags invalid regex rules', () => {
@@ -118,6 +179,33 @@ describe('analytics > rule analysis', () => {
 		expect(hotspot?.sampleCommands.length).toBeGreaterThan(0);
 	});
 
+	test('limits replay separately from unmatched suggestion candidates', () => {
+		const manifest = makeManifest({
+			policy: { default_unknown: 'approve', approval_method: 'web' },
+			rules: { 'echo *': 'allow' },
+		});
+		for (let index = 0; index < 5; index += 1) {
+			const { approvalRequestId } = store.append(makeCall({ command: `git push origin branch-${index}` }), {
+				decision: 'approve',
+				classification: 'unknown',
+				reason: 'no matching rule, fell back to policy.default_unknown=approve',
+			});
+			if (approvalRequestId !== undefined) store.resolveApprovalRequest(approvalRequestId, 'approved');
+		}
+		for (let index = 0; index < 5; index += 1) {
+			record(manifest, { command: `echo newer-${index}` });
+		}
+
+		const analysis = analyzeRules(manifest, store, { minOccurrences: 5, replayLimit: 5 });
+		const suggestion = analysis.suggestions.find((entry) => entry.pattern === 'git push *');
+
+		expect(suggestion).toMatchObject({
+			kind: 'promote-approved',
+			evidence: { occurrences: 5, approvedCount: 5 },
+			impact: { matchingCalls: 0 },
+		});
+	});
+
 	test('keeps approval hotspot samples inside the requested workspace', () => {
 		const manifest = makeManifest({
 			rules: { 'gh *': 'approve' },
@@ -172,6 +260,7 @@ describe('analytics > rule analysis', () => {
 		expect(analysis.tomlSnippet).toContain('Workspace target: "client"');
 		expect(analysis.tomlSnippet).toContain('Move and uncomment each proposed entry');
 		expect(analysis.tomlSnippet).not.toContain('\n[workspaces.rules]\n');
+		expect(store.matchedRuleCountsCalls).toBe(1);
 	});
 
 	test('rejects analytics for an unknown workspace id', () => {

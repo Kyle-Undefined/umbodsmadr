@@ -172,4 +172,106 @@ describe('analytics API routes', () => {
 			umbod.close();
 		}
 	});
+
+	test('supports folded server search, cursor summaries, detail loading, and snapshots', async () => {
+		const umbod = createUmbod({
+			manifest: makeManifest(),
+			dbPath: path.join(tempDir, 'audit.db'),
+			sessionLogSources: [],
+		});
+
+		try {
+			for (const command of ['Grímr inspect', 'smørrebrød make', 'Straße check', 'plain command']) {
+				umbod.auditLog.append(
+					{
+						agent: 'codex',
+						tool: 'bash',
+						command,
+						args: ['--verbose'],
+						inputs: { command },
+						timestamp: '2026-07-31T12:00:00.000Z',
+					},
+					{ decision: 'allow', classification: 'readonly', reason: `allowed ${command}` }
+				);
+			}
+
+			const folded = (await fetchJson(umbod, '/api/analytics/calls?search=STRASSE')) as {
+				entries: Array<{ command: string }>;
+				page: number;
+				total: number;
+			};
+			expect(folded.entries.map((entry) => entry.command)).toEqual(['Straße check']);
+			expect(folded).toMatchObject({ page: 1, total: 1 });
+
+			const first = (await fetchJson(
+				umbod,
+				'/api/analytics/calls?pagination=cursor&cursor=start&pageSize=2&projection=summary&includeTotal=0'
+			)) as {
+				entries: Array<Record<string, unknown>>;
+				hasMore: boolean;
+				nextCursor: string;
+				total?: number;
+			};
+			expect(first).toMatchObject({ hasMore: true });
+			expect(first.total).toBeUndefined();
+			expect(first.entries).toHaveLength(2);
+			expect(first.entries[0]).toEqual({
+				id: expect.any(Number),
+				agent: 'codex',
+				tool: 'bash',
+				command: 'plain command',
+				timestamp: '2026-07-31T12:00:00.000Z',
+				decision: 'allow',
+				classification: 'readonly',
+			});
+
+			const second = (await fetchJson(
+				umbod,
+				`/api/analytics/calls?pagination=cursor&cursor=${first.nextCursor}&pageSize=2&projection=summary&includeTotal=true`
+			)) as {
+				entries: Array<{ id: number; command: string }>;
+				hasMore: boolean;
+				nextCursor: null;
+				total: number;
+				totalPages: number;
+			};
+			expect(second.entries.map((entry) => entry.command)).toEqual(['smørrebrød make', 'Grímr inspect']);
+			expect(second).toMatchObject({ hasMore: false, nextCursor: null, total: 4, totalPages: 2 });
+
+			const detail = (await fetchJson(umbod, `/api/analytics/calls/${String(first.entries[0]?.id)}`)) as {
+				entry: { args: string[]; inputs: Record<string, unknown>; reason: string };
+			};
+			expect(detail.entry).toMatchObject({
+				args: ['--verbose'],
+				inputs: { command: 'plain command' },
+				reason: 'allowed plain command',
+			});
+
+			const snapshot = (await fetchJson(umbod, '/api/analytics/snapshot?projection=summary')) as {
+				tools: { totals: { entries: number }; byTaskType: unknown[]; unusedTools: unknown[] };
+				rules: { rules: unknown[]; approvalHotspots: unknown[]; suggestions: unknown[] };
+				revision?: string;
+			};
+			expect(snapshot.tools.totals.entries).toBe(4);
+			expect(snapshot.tools.byTaskType).toEqual([]);
+			expect(snapshot.tools.unusedTools).toEqual([]);
+			expect(snapshot.rules.rules).toEqual([]);
+			expect(snapshot.rules.approvalHotspots).toEqual([]);
+			expect(snapshot.rules.suggestions).toEqual([]);
+			expect(snapshot.revision).toBe(umbod.auditLog.revision());
+
+			const missing = await umbod.fetch(new Request('http://umbod.test/api/analytics/calls/99999'));
+			expect(missing?.status).toBe(404);
+			const malformed = await umbod.fetch(
+				new Request('http://umbod.test/api/analytics/calls?pagination=cursor&cursor=nope')
+			);
+			expect(malformed?.status).toBe(400);
+			const contradictory = await umbod.fetch(
+				new Request('http://umbod.test/api/analytics/calls?pagination=page&cursor=1')
+			);
+			expect(contradictory?.status).toBe(400);
+		} finally {
+			umbod.close();
+		}
+	});
 });

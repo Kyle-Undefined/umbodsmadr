@@ -1,7 +1,7 @@
 import { dirname } from 'node:path';
 
 import type { AuditEntry, Manifest } from '../core/types.ts';
-import type { AuditLogStore } from '../db/audit-log.ts';
+import type { AuditLogReader } from '../db/audit-log.ts';
 import { matchesPattern } from '../policy/rule-matcher.ts';
 import { ruleMatchCandidates } from '../policy/rule-candidates.ts';
 import type { AuditFilter, RuleSuggestion } from './types.ts';
@@ -51,6 +51,11 @@ interface SuggestionContext {
 	minOccurrences: number;
 	blockedEntries: AuditEntry[];
 	replayEntries: AuditEntry[];
+}
+
+interface PreloadedSuggestionEntries {
+	replayEntries: AuditEntry[];
+	clusterEntries: AuditEntry[];
 }
 
 function projectImpact(
@@ -225,9 +230,9 @@ function suggestionForCluster(cluster: Cluster, context: SuggestionContext): Rul
 
 export function suggestRules(
 	manifest: Manifest,
-	auditLog: AuditLogStore,
+	auditLog: AuditLogReader,
 	options: SuggestRulesOptions = {},
-	preloadedEntries?: AuditEntry[]
+	preloadedEntries?: AuditEntry[] | PreloadedSuggestionEntries
 ): RuleSuggestion[] {
 	const minOccurrences = options.minOccurrences ?? DEFAULT_MIN_OCCURRENCES;
 	const filter = {
@@ -244,8 +249,12 @@ export function suggestRules(
 	if (options.workspace !== undefined && workspace === undefined) {
 		throw new Error(`workspace "${options.workspace}" is not configured`);
 	}
-	const replayEntries = preloadedEntries ?? auditLog.listRecentFiltered(filter, replayLimit);
-	const clusterEntries = preloadedEntries ?? auditLog.unmatchedEntries(filter, replayLimit);
+	const replayEntries = Array.isArray(preloadedEntries)
+		? preloadedEntries
+		: (preloadedEntries?.replayEntries ?? auditLog.listRecentFiltered(filter, replayLimit));
+	const clusterEntries = Array.isArray(preloadedEntries)
+		? preloadedEntries
+		: (preloadedEntries?.clusterEntries ?? auditLog.unmatchedEntries(filter, replayLimit));
 	const blockedEntries = replayEntries.filter(
 		(entry) => entry.decision === 'block' || entry.approvalStatus === 'denied'
 	);

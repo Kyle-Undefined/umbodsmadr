@@ -1,6 +1,6 @@
 import { adapters } from '../adapters/index.ts';
 import type { Manifest } from '../core/types.ts';
-import type { AuditLogStore } from '../db/audit-log.ts';
+import type { AuditLogReader } from '../db/audit-log.ts';
 import type { ToolUsageQuery, ToolUsageStats, UnusedTool } from './types.ts';
 
 const DEFAULT_RECENT_WINDOW_DAYS = 14;
@@ -24,7 +24,7 @@ function ruleToolReference(pattern: string, knownTools: Set<string>): string | u
 	return 'bash';
 }
 
-function lastSeenByTool(rows: ReturnType<AuditLogStore['aggregateToolUsage']>): Map<string, string> {
+function lastSeenByTool(rows: ReturnType<AuditLogReader['aggregateToolUsage']>): Map<string, string> {
 	const lastSeen = new Map<string, string>();
 	for (const row of rows) {
 		const existing = lastSeen.get(row.tool);
@@ -60,8 +60,58 @@ function referencedRules(patterns: string[], knownTools: Set<string>): Map<strin
 	return references;
 }
 
+function historicalUnusedTools(lastSeen: Map<string, string>, recentTools: Set<string>): UnusedTool[] {
+	return [...lastSeen]
+		.filter(([tool]) => !recentTools.has(tool))
+		.map(([tool, seen]) => ({ tool, source: 'history', lastSeen: seen }));
+}
+
+function ruleOnlyTools(references: Map<string, string[]>, everSeen: Map<string, string>): UnusedTool[] {
+	return [...references]
+		.filter(([tool]) => !everSeen.has(tool))
+		.map(([tool, patterns]) => ({ tool, source: 'rules', referencedByRules: patterns }));
+}
+
+function adapterOnlyTools(
+	adapterTools: Set<string>,
+	everSeen: Map<string, string>,
+	ruleReferences: Map<string, string[]>
+): UnusedTool[] {
+	return [...adapterTools]
+		.filter((tool) => !everSeen.has(tool) && !ruleReferences.has(tool))
+		.map((tool) => ({ tool, source: 'adapter' }));
+}
+
+function unusedToolDetails(
+	auditLog: AuditLogReader,
+	manifest: Manifest,
+	query: ToolUsageQuery,
+	usageRows: ReturnType<AuditLogReader['aggregateToolUsage']>,
+	recentWindowDays: number
+): UnusedTool[] {
+	const allTimeFilter = {
+		agent: query.agent,
+		project: query.project,
+		workspace: query.workspace,
+	};
+	const windowIsAllTime = query.since === undefined && query.until === undefined;
+	const allTime = windowIsAllTime ? usageRows : auditLog.aggregateToolUsage(allTimeFilter);
+	const recentSince = new Date(Date.now() - recentWindowDays * 86_400_000).toISOString();
+	const recentTools = new Set(auditLog.distinctTools({ ...allTimeFilter, since: recentSince }));
+	const everSeen = lastSeenByTool(allTime);
+	const adapterTools = supportedAdapterTools();
+	const knownTools = new Set([...adapterTools, ...everSeen.keys()]);
+	const ruleReferences = referencedRules(configuredRulePatterns(manifest, query.workspace), knownTools);
+
+	return [
+		...historicalUnusedTools(everSeen, recentTools),
+		...ruleOnlyTools(ruleReferences, everSeen),
+		...adapterOnlyTools(adapterTools, everSeen, ruleReferences),
+	];
+}
+
 export function computeToolUsage(
-	auditLog: AuditLogStore,
+	auditLog: AuditLogReader,
 	manifest: Manifest,
 	query: ToolUsageQuery = {}
 ): ToolUsageStats {
@@ -69,59 +119,25 @@ export function computeToolUsage(
 	const topCommandsPerTool = query.topCommandsPerTool ?? DEFAULT_TOP_COMMANDS;
 	const window = { since: query.since, until: query.until };
 	const filter = { ...window, agent: query.agent, project: query.project, workspace: query.workspace };
+	const summary = query.projection === 'summary';
+	const projection = summary ? 'summary' : 'full';
 
 	const totals = auditLog.usageTotals(filter);
 	const usageRows = auditLog.aggregateToolUsage(filter);
-	const topCommands = auditLog.topCommandsByTool(filter, topCommandsPerTool);
-	const byTaskType = auditLog.aggregateTaskTypes(filter);
+	const topCommands = summary
+		? new Map<string, Array<{ command: string; count: number }>>()
+		: auditLog.topCommandsByTool(filter, topCommandsPerTool);
+	const byTaskType = summary ? [] : auditLog.aggregateTaskTypes(filter);
 
 	const byTool = usageRows.map((row) => ({
 		...row,
 		topCommands: topCommands.get(row.tool) ?? [],
 	}));
+	if (summary) return { projection, window, totals, byTool, byTaskType, unusedTools: [] };
 
-	// Unused tools: compare all-time history against a recent window, then
-	// fold in tools referenced by rules or declared by adapters but never seen.
-	const allTime = auditLog.aggregateToolUsage({
-		agent: query.agent,
-		project: query.project,
-		workspace: query.workspace,
-	});
-	const recentSince = new Date(Date.now() - recentWindowDays * 86_400_000).toISOString();
-	const recentTools = new Set(
-		auditLog
-			.aggregateToolUsage({
-				since: recentSince,
-				agent: query.agent,
-				project: query.project,
-				workspace: query.workspace,
-			})
-			.map((row) => row.tool)
-	);
-	const everSeen = lastSeenByTool(allTime);
+	// Compare all-time history with recent use, then include tools known only
+	// from configured rules or adapter declarations.
+	const unusedTools = unusedToolDetails(auditLog, manifest, query, usageRows, recentWindowDays);
 
-	const unusedTools: UnusedTool[] = [];
-	for (const [tool, lastSeen] of everSeen) {
-		if (!recentTools.has(tool)) {
-			unusedTools.push({ tool, source: 'history', lastSeen });
-		}
-	}
-
-	const adapterTools = supportedAdapterTools();
-	const knownTools = new Set([...adapterTools, ...everSeen.keys()]);
-	const ruleRefs = referencedRules(configuredRulePatterns(manifest, query.workspace), knownTools);
-
-	for (const [tool, patterns] of ruleRefs) {
-		if (!everSeen.has(tool)) {
-			unusedTools.push({ tool, source: 'rules', referencedByRules: patterns });
-		}
-	}
-
-	for (const tool of adapterTools) {
-		if (!everSeen.has(tool) && !ruleRefs.has(tool)) {
-			unusedTools.push({ tool, source: 'adapter' });
-		}
-	}
-
-	return { window, totals, byTool, byTaskType, unusedTools };
+	return { projection, window, totals, byTool, byTaskType, unusedTools };
 }

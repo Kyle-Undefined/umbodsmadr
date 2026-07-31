@@ -1,8 +1,9 @@
 import { findAdapterById } from '../adapters/index.ts';
 import { analyzeRules } from '../analytics/rule-analysis.ts';
 import { computeCoverage, scopeCoverageSources } from '../analytics/coverage.ts';
+import { computeAnalyticsSnapshot } from '../analytics/snapshot.ts';
 import { computeToolUsage } from '../analytics/tool-usage.ts';
-import type { AuditFilter } from '../analytics/types.ts';
+import type { AnalyticsSnapshotQuery, AuditFilter } from '../analytics/types.ts';
 import type {
 	ApprovalDecision,
 	ApprovalStatus,
@@ -11,7 +12,7 @@ import type {
 	Manifest,
 	ToolCall,
 } from '../core/types.ts';
-import { AuditLogStore } from '../db/audit-log.ts';
+import { AuditLogStore, type AuditLogStoreOptions } from '../db/audit-log.ts';
 import { toPermissionDecision } from '../hooks/adapter-utils.ts';
 import { PolicyEngine } from '../policy/engine.ts';
 import { resolveTimeParam } from '../utils/duration.ts';
@@ -48,6 +49,8 @@ export interface UmbodOptions {
 	dbPath?: string;
 	/** Preconstructed store; takes precedence over dbPath. */
 	auditLog?: AuditLogStore;
+	/** Writable connection settings used when Umbod owns the store. */
+	auditLogOptions?: AuditLogStoreOptions;
 	/** Defaults to manifest.env.timeout seconds. 0 waits forever. */
 	approvalTimeoutMs?: number;
 	/** Interactive approval hook (CLI prompt, host app UI, ...). Used when approval_method is "cli" or "both". */
@@ -67,6 +70,8 @@ export interface Umbod {
 	/** Resolve a pending approval. Returns false if it was already resolved. */
 	resolveApproval(approvalRequestId: number, status: Exclude<ApprovalStatus, 'pending'>): boolean;
 	listPendingApprovals(): ReturnType<AuditLogStore['listPendingApprovals']>;
+	/** Compute tool and rule reports against one consistent audit snapshot. */
+	analyticsSnapshot(options?: AnalyticsSnapshotQuery): ReturnType<typeof computeAnalyticsSnapshot>;
 	/**
 	 * Handles umbod API routes (/health, /api/*). Returns undefined for
 	 * anything else so callers can mount their own routes around it.
@@ -106,6 +111,54 @@ function optionalQueryParam(url: URL, name: string): string | undefined {
 	return value === null ? undefined : value;
 }
 
+function parseBooleanParam(url: URL, name: string, fallback: boolean): boolean {
+	const value = url.searchParams.get(name);
+	if (value === null) return fallback;
+	if (value === 'true' || value === '1') return true;
+	if (value === 'false' || value === '0') return false;
+	throw new Error(`${name} must be true, false, 1, or 0`);
+}
+
+function parseCursor(url: URL): number | undefined {
+	const value = url.searchParams.get('cursor');
+	if (value === null || value === '' || value === 'start') return undefined;
+	if (!/^\d+$/.test(value)) throw new Error('cursor must be "start" or a positive audit entry id');
+	const cursor = Number(value);
+	if (!Number.isSafeInteger(cursor) || cursor <= 0) {
+		throw new Error('cursor must be "start" or a positive audit entry id');
+	}
+	return cursor;
+}
+
+function parseProjectionParam(url: URL): 'full' | 'summary' | undefined {
+	const value = url.searchParams.get('projection');
+	if (value === null) return undefined;
+	if (value === 'full' || value === 'summary') return value;
+	throw new Error('projection must be "full" or "summary"');
+}
+
+function parseCallPageSize(url: URL): number {
+	return Math.min(Math.max(parseIntParam(url, 'pageSize') ?? 50, 1), 200);
+}
+
+function usesCursorPagination(url: URL): boolean {
+	const pagination = url.searchParams.get('pagination');
+	const hasCursor = url.searchParams.has('cursor');
+	if (pagination !== null && pagination !== 'cursor' && pagination !== 'page') {
+		throw new Error('pagination must be "page" or "cursor"');
+	}
+	if (pagination === 'page' && hasCursor) {
+		throw new Error('cursor cannot be combined with pagination="page"');
+	}
+	return pagination === 'cursor' || (pagination === null && hasCursor);
+}
+
+function validateLegacyCallPageParams(url: URL): void {
+	if (url.searchParams.has('projection') || url.searchParams.has('includeTotal')) {
+		throw new Error('projection and includeTotal require cursor pagination');
+	}
+}
+
 /** Reads analytics filters. Throws on malformed times. */
 function parseAuditFilter(url: URL): AuditFilter {
 	return {
@@ -131,7 +184,7 @@ export function createUmbod(options: UmbodOptions): Umbod {
 		throw new Error('createUmbod requires either dbPath or auditLog');
 	}
 
-	const auditLog = options.auditLog ?? new AuditLogStore(options.dbPath as string);
+	const auditLog = options.auditLog ?? new AuditLogStore(options.dbPath as string, options.auditLogOptions);
 	const engine = new PolicyEngine(manifest);
 
 	function publishEntry(call: ToolCall, result: EvaluationResult): ActivityEntry {
@@ -328,48 +381,102 @@ export function createUmbod(options: UmbodOptions): Umbod {
 	}
 
 	function handleCallExplorer(url: URL, filter: AuditFilter): Response {
-		const pageSize = Math.min(Math.max(parseIntParam(url, 'pageSize') ?? 50, 1), 200);
+		const pageSize = parseCallPageSize(url);
+		if (usesCursorPagination(url)) {
+			const projection = parseProjectionParam(url);
+			return Response.json(
+				auditLog.listRecentCursor(filter, {
+					cursor: parseCursor(url),
+					pageSize,
+					includeTotal: parseBooleanParam(url, 'includeTotal', false),
+					projection: projection ?? 'full',
+				})
+			);
+		}
+		validateLegacyCallPageParams(url);
 		const page = Math.max(parseIntParam(url, 'page') ?? 1, 1);
 		return Response.json(auditLog.listRecentPage(filter, page, pageSize));
+	}
+
+	function handleCallDetail(pathname: string): Response | undefined {
+		if (!pathname.startsWith('/api/analytics/calls/')) return undefined;
+		const idText = pathname.slice('/api/analytics/calls/'.length);
+		if (!/^\d+$/.test(idText)) throw new Error('audit entry id must be a positive integer');
+		const id = Number(idText);
+		if (!Number.isSafeInteger(id) || id <= 0) throw new Error('audit entry id must be a positive integer');
+		const entry = auditLog.getEntry(id);
+		return entry === undefined
+			? Response.json({ ok: false, error: `audit entry ${id} was not found` }, { status: 404 })
+			: Response.json({ entry });
+	}
+
+	function handleAnalyticsSnapshot(url: URL, filter: AuditFilter): Response {
+		return Response.json(
+			computeAnalyticsSnapshot(auditLog, manifest, {
+				since: filter.since,
+				until: filter.until,
+				agent: filter.agent,
+				project: filter.project,
+				workspace: filter.workspace,
+				projection: parseProjectionParam(url),
+				recentWindowDays: parseIntParam(url, 'recentDays'),
+				topCommandsPerTool: parseIntParam(url, 'topCommands'),
+				minOccurrences: parseIntParam(url, 'minOccurrences'),
+				replayLimit: parseIntParam(url, 'replayLimit'),
+			})
+		);
+	}
+
+	function handleToolAnalytics(url: URL, filter: AuditFilter): Response {
+		return Response.json(
+			computeToolUsage(auditLog, manifest, {
+				...filter,
+				projection: parseProjectionParam(url),
+				recentWindowDays: parseIntParam(url, 'recentDays'),
+				topCommandsPerTool: parseIntParam(url, 'topCommands'),
+			})
+		);
+	}
+
+	function handleRuleAnalytics(url: URL, filter: AuditFilter): Response {
+		return Response.json(
+			analyzeRules(manifest, auditLog, {
+				...filter,
+				projection: parseProjectionParam(url),
+				minOccurrences: parseIntParam(url, 'minOccurrences'),
+			})
+		);
+	}
+
+	function handleCoverageAnalytics(url: URL, filter: AuditFilter): Promise<Response> {
+		const since = filter.since ?? new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+		const sources = scopeCoverageSources(manifest, sessionLogSources, { ...filter, since });
+		return computeCoverage(auditLog, sources, {
+			...filter,
+			since,
+			heuristicWindowMs: parseIntParam(url, 'heuristicWindowMs'),
+			gapLimit: parseIntParam(url, 'gapLimit'),
+		})
+			.then((report) => Response.json(report))
+			.catch(analyticsError);
+	}
+
+	function dispatchAnalytics(url: URL, filter: AuditFilter): Response | Promise<Response> | undefined {
+		const callDetail = handleCallDetail(url.pathname);
+		if (callDetail) return callDetail;
+		if (url.pathname === '/api/analytics/calls') return handleCallExplorer(url, filter);
+		if (url.pathname === '/api/analytics/snapshot') return handleAnalyticsSnapshot(url, filter);
+		if (url.pathname === '/api/analytics/tools') return handleToolAnalytics(url, filter);
+		if (url.pathname === '/api/analytics/rules') return handleRuleAnalytics(url, filter);
+		if (url.pathname === '/api/analytics/coverage') return handleCoverageAnalytics(url, filter);
+		return undefined;
 	}
 
 	function handleAnalytics(url: URL): Response | Promise<Response> | undefined {
 		if (!url.pathname.startsWith('/api/analytics/')) return undefined;
 
 		try {
-			const filter = parseAuditFilter(url);
-			if (url.pathname === '/api/analytics/calls') {
-				return handleCallExplorer(url, filter);
-			}
-			if (url.pathname === '/api/analytics/tools') {
-				return Response.json(
-					computeToolUsage(auditLog, manifest, {
-						...filter,
-						recentWindowDays: parseIntParam(url, 'recentDays'),
-						topCommandsPerTool: parseIntParam(url, 'topCommands'),
-					})
-				);
-			}
-			if (url.pathname === '/api/analytics/rules') {
-				return Response.json(
-					analyzeRules(manifest, auditLog, {
-						...filter,
-						minOccurrences: parseIntParam(url, 'minOccurrences'),
-					})
-				);
-			}
-			if (url.pathname !== '/api/analytics/coverage') return undefined;
-
-			const since = filter.since ?? new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-			const sources = scopeCoverageSources(manifest, sessionLogSources, { ...filter, since });
-			return computeCoverage(auditLog, sources, {
-				...filter,
-				since,
-				heuristicWindowMs: parseIntParam(url, 'heuristicWindowMs'),
-				gapLimit: parseIntParam(url, 'gapLimit'),
-			})
-				.then((report) => Response.json(report))
-				.catch(analyticsError);
+			return dispatchAnalytics(url, parseAuditFilter(url));
 		} catch (error: unknown) {
 			return analyticsError(error);
 		}
@@ -426,6 +533,7 @@ export function createUmbod(options: UmbodOptions): Umbod {
 		authorize,
 		resolveApproval: (approvalRequestId, status) => auditLog.resolveApprovalRequest(approvalRequestId, status),
 		listPendingApprovals,
+		analyticsSnapshot: (snapshotOptions) => computeAnalyticsSnapshot(auditLog, manifest, snapshotOptions),
 		fetch: handleFetch,
 		close: () => auditLog.close(),
 	};

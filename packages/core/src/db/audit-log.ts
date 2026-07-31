@@ -1,18 +1,41 @@
 import { Database } from 'bun:sqlite';
+import { randomUUID } from 'node:crypto';
 
 import type {
 	ApprovalHotspot,
 	AuditFilter,
+	AuditEntrySummary,
+	CursorCallQuery,
+	CursorCallPage,
 	CoverageAuditRow,
 	MatchedRuleCount,
 	TaskTypeRow,
 	ToolUsageRow,
 } from '../analytics/types.ts';
-import type { ApprovalRequest, ApprovalStatus, AuditEntry, EvaluationResult, ToolCall } from '../core/types.ts';
-import { MIGRATIONS, SCHEMA, SCHEMA_VERSION } from './schema.ts';
+import type {
+	ApprovalRequest,
+	ApprovalStatus,
+	AuditEntry,
+	EvaluationResult,
+	StoredAuditEntry,
+	ToolCall,
+} from '../core/types.ts';
+import { normalizeSearchText, quoteFts5Literal } from '../utils/search.ts';
+import { FTS_SCHEMA, FTS_TRIGGER_NAMES, MIGRATIONS, SCHEMA, SCHEMA_VERSION } from './schema.ts';
 
 const VALID_DECISIONS = new Set<string>(['allow', 'block', 'approve']);
 const VALID_CLASSIFICATIONS = new Set<string>(['readonly', 'destructive', 'external', 'stateful', 'unknown']);
+const DEFAULT_BUSY_TIMEOUT_MS = 5_000;
+
+export interface AuditLogConnectionOptions {
+	/** Time SQLite waits for a lock before returning SQLITE_BUSY. Default 5000. */
+	busyTimeoutMs?: number;
+}
+
+export interface AuditLogStoreOptions extends AuditLogConnectionOptions {
+	/** Opt in to persistent WAL mode during writable initialization. */
+	journalMode?: 'default' | 'wal';
+}
 
 function finiteNumber(value: unknown, label: string): number {
 	const number = Number(value);
@@ -41,7 +64,7 @@ function safeJsonParse<T>(value: unknown, fallback: T): T {
 	}
 }
 
-function rowToAuditEntry(row: Record<string, unknown>): AuditEntry {
+function rowToAuditEntry(row: Record<string, unknown>): StoredAuditEntry {
 	const rawId = row.id ?? row.audit_log_id;
 	if (rawId === undefined || rawId === null) throw new Error('missing id in audit log row');
 
@@ -66,11 +89,23 @@ function rowToAuditEntry(row: Record<string, unknown>): AuditEntry {
 	};
 }
 
-function rowToAuditEntryWithApproval(row: Record<string, unknown>): AuditEntry {
+function rowToAuditEntryWithApproval(row: Record<string, unknown>): StoredAuditEntry {
 	return {
 		...rowToAuditEntry(row),
 		approvalStatus: optionalString(row.approval_status) as ApprovalStatus | undefined,
 		approvalResolvedAt: optionalString(row.approval_resolved_at),
+	};
+}
+
+function rowToAuditEntrySummary(row: Record<string, unknown>): AuditEntrySummary {
+	return {
+		id: finiteNumber(row.id, 'audit log row id'),
+		agent: String(row.agent),
+		tool: String(row.tool),
+		command: String(row.command),
+		timestamp: String(row.timestamp),
+		decision: enumValue(row.decision, VALID_DECISIONS, 'decision in audit log row'),
+		classification: enumValue(row.classification, VALID_CLASSIFICATIONS, 'classification in audit log row'),
 	};
 }
 
@@ -87,6 +122,7 @@ function auditEntryValues(call: ToolCall, result: EvaluationResult, timestamp: s
 		call.agent,
 		call.tool,
 		call.command,
+		normalizeSearchText(call.command),
 		jsonOr(call.args, []),
 		nullable(call.workingDirectory),
 		nullable(call.workspaceId),
@@ -103,78 +139,182 @@ function auditEntryValues(call: ToolCall, result: EvaluationResult, timestamp: s
 	];
 }
 
-export class AuditLogStore {
-	private readonly database: Database;
+function validatedBusyTimeout(value: number | undefined): number {
+	const timeout = value ?? DEFAULT_BUSY_TIMEOUT_MS;
+	if (!Number.isSafeInteger(timeout) || timeout < 0 || timeout > 2_147_483_647) {
+		throw new Error(`busyTimeoutMs must be an integer between 0 and 2147483647; received ${String(value)}`);
+	}
+	return timeout;
+}
 
-	constructor(databasePath: string) {
-		this.database = new Database(databasePath, { create: true });
-		this.migrate();
-		this.database.exec(SCHEMA);
-		this.database.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+function databaseObjectExists(database: Database, type: 'table' | 'trigger', name: string): boolean {
+	return database.query('SELECT 1 FROM sqlite_master WHERE type = ? AND name = ?').get(type, name) !== null;
+}
+
+function hasRequiredColumns(database: Database, table: string, required: readonly string[]): boolean {
+	const columns = new Set(
+		(database.query(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map((row) => row.name)
+	);
+	return required.every((column) => columns.has(column));
+}
+
+function validateReadableSchema(database: Database): void {
+	const requiredTables = ['audit_log', 'approval_requests'] as const;
+	for (const table of requiredTables) {
+		if (!databaseObjectExists(database, 'table', table)) {
+			throw new Error(`audit database schema version is current but required table "${table}" is missing`);
+		}
 	}
 
-	// Bring a pre-existing audit_log up to the current shape before SCHEMA
-	// runs, since SCHEMA's index statements assume the new columns exist.
-	private migrate(): void {
-		const tableExists =
-			this.database.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'audit_log'").get() !== null;
-		if (!tableExists) {
-			return;
+	const auditColumns = [
+		'id',
+		'agent',
+		'tool',
+		'command',
+		'command_search',
+		'args_json',
+		'working_directory',
+		'workspace_id',
+		'inputs_json',
+		'timestamp',
+		'decision',
+		'classification',
+		'matched_rule',
+		'policy_scope',
+		'resolved_workspace_id',
+		'reason',
+		'session_id',
+		'tool_use_id',
+	] as const;
+	if (!hasRequiredColumns(database, 'audit_log', auditColumns)) {
+		throw new Error('audit database schema version is current but audit_log is missing required columns');
+	}
+	if (
+		!hasRequiredColumns(database, 'approval_requests', ['id', 'audit_log_id', 'status', 'created_at', 'resolved_at'])
+	) {
+		throw new Error('audit database schema version is current but approval_requests is missing required columns');
+	}
+}
+
+function hasUsableTrigramIndex(database: Database): boolean {
+	if (!databaseObjectExists(database, 'table', 'audit_log_command_fts')) return false;
+	if (!FTS_TRIGGER_NAMES.every((name) => databaseObjectExists(database, 'trigger', name))) return false;
+
+	try {
+		database
+			.query('SELECT rowid FROM audit_log_command_fts WHERE audit_log_command_fts MATCH ? LIMIT 0')
+			.all('"umbod"');
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+function supportsTrigramIndex(database: Database): boolean {
+	const probe = 'temp.umbod_fts5_trigram_probe';
+	try {
+		database.exec(`DROP TABLE IF EXISTS ${probe}`);
+		database.exec(`CREATE VIRTUAL TABLE ${probe} USING fts5(value, tokenize = 'trigram')`);
+		database.exec(`DROP TABLE ${probe}`);
+		return true;
+	} catch {
+		try {
+			database.exec(`DROP TABLE IF EXISTS ${probe}`);
+		} catch {
+			// The failed capability probe must not mask the fallback path.
 		}
+		return false;
+	}
+}
 
-		const { user_version: userVersion } = this.database.query('PRAGMA user_version').get() as {
-			user_version: number;
-		};
-		if (userVersion >= SCHEMA_VERSION) {
-			return;
-		}
+function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
+	return (
+		(typeof value === 'object' || typeof value === 'function') &&
+		value !== null &&
+		typeof (value as { then?: unknown }).then === 'function'
+	);
+}
 
-		const columns = new Set(
-			(this.database.query('PRAGMA table_info(audit_log)').all() as Array<{ name: string }>).map((row) => row.name)
-		);
+function validateCursorQuery(query: CursorCallQuery): void {
+	if (!Number.isSafeInteger(query.pageSize) || query.pageSize < 1 || query.pageSize > 200) {
+		throw new Error(`pageSize must be an integer between 1 and 200; received ${String(query.pageSize)}`);
+	}
+	if (query.cursor !== undefined && (!Number.isSafeInteger(query.cursor) || query.cursor <= 0)) {
+		throw new Error(`cursor must be a positive audit entry id; received ${String(query.cursor)}`);
+	}
+}
 
-		this.database.transaction(() => {
-			for (let version = userVersion + 1; version <= SCHEMA_VERSION; version += 1) {
-				for (const statement of MIGRATIONS[version] ?? []) {
-					if (statement.addsColumn && columns.has(statement.addsColumn)) {
-						continue;
-					}
-					this.database.exec(statement.sql);
-				}
-			}
-		})();
+function cursorPage(
+	rows: Array<Record<string, unknown>>,
+	query: CursorCallQuery,
+	projection: 'full' | 'summary'
+): CursorCallPage {
+	const hasMore = rows.length > query.pageSize;
+	const visibleRows = hasMore ? rows.slice(0, query.pageSize) : rows;
+	const entries =
+		projection === 'summary' ? visibleRows.map(rowToAuditEntrySummary) : visibleRows.map(rowToAuditEntryWithApproval);
+	const lastEntry = entries.at(-1);
+	return {
+		entries,
+		pageSize: query.pageSize,
+		hasMore,
+		nextCursor: hasMore && lastEntry?.id !== undefined ? String(lastEntry.id) : null,
+	};
+}
+
+export class AuditLogReader {
+	protected readonly database: Database;
+	private readonly readerInstanceId = randomUUID();
+	private localMutationVersion = 0;
+	private trigramSearchAvailable = false;
+
+	protected constructor(database: Database) {
+		this.database = database;
 	}
 
 	close(): void {
 		this.database.close();
 	}
 
-	append(call: ToolCall, result: EvaluationResult): { entryId: number; approvalRequestId?: number } {
-		const timestamp = call.timestamp ?? new Date().toISOString();
-		const insertEntry = this.database.query(
-			`INSERT INTO audit_log (
-        agent, tool, command, args_json, working_directory, workspace_id, inputs_json, timestamp,
-        decision, classification, matched_rule, policy_scope, resolved_workspace_id, reason, session_id, tool_use_id
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`
-		);
-		const insertApproval = this.database.query(
-			'INSERT INTO approval_requests (audit_log_id, created_at) VALUES (?, ?) RETURNING id'
-		);
-
-		return this.database.transaction(() => {
-			const row = insertEntry.get(...auditEntryValues(call, result, timestamp)) as { id: number };
-			let approvalRequestId: number | undefined;
-
-			if (result.decision === 'approve') {
-				const approvalRow = insertApproval.get(row.id, timestamp) as { id: number };
-				approvalRequestId = approvalRow.id;
-			}
-
-			return { entryId: row.id, approvalRequestId };
-		})();
+	/**
+	 * Connection-local change token. Compare successive values only while this
+	 * reader remains open; it is not a durable database revision.
+	 */
+	dataVersion(): number {
+		const row = this.database.query('PRAGMA data_version').get() as { data_version: number };
+		return Number(row.data_version);
 	}
 
-	listRecent(limit?: number): AuditEntry[] {
+	/**
+	 * Opaque cache token for this open connection. Compare it only with later
+	 * values from the same reader instance.
+	 */
+	revision(): string {
+		return `${this.readerInstanceId}:${this.dataVersion()}:${this.localMutationVersion}`;
+	}
+
+	protected noteMutation(): void {
+		this.localMutationVersion += 1;
+	}
+
+	protected enableTrigramSearch(): void {
+		this.trigramSearchAvailable = true;
+	}
+
+	/** Run related synchronous reads against one deferred SQLite snapshot. */
+	withSnapshot<T>(read: () => T): T {
+		return this.database
+			.transaction(() => {
+				const result = read();
+				if (isPromiseLike(result)) {
+					throw new Error('AuditLogReader.withSnapshot requires a synchronous callback');
+				}
+				return result;
+			})
+			.deferred();
+	}
+
+	listRecent(limit?: number): StoredAuditEntry[] {
 		let sql = `SELECT al.id, al.agent, al.tool, al.command, al.args_json, al.working_directory, al.workspace_id, al.inputs_json,
                 al.timestamp, al.decision, al.classification, al.matched_rule, al.policy_scope, al.resolved_workspace_id, al.reason,
                 al.session_id, al.tool_use_id,
@@ -190,7 +330,7 @@ export class AuditLogStore {
 		return rows.map(rowToAuditEntryWithApproval);
 	}
 
-	listRecentFiltered(filter: AuditFilter = {}, limit = 2000, offset = 0): AuditEntry[] {
+	listRecentFiltered(filter: AuditFilter = {}, limit = 2000, offset = 0): StoredAuditEntry[] {
 		const { where, params } = this.buildFilter(filter, 'al');
 		const rows = this.database
 			.query(
@@ -209,12 +349,72 @@ export class AuditLogStore {
 		return rows.map(rowToAuditEntryWithApproval);
 	}
 
-	// fallow-ignore-next-line unused-class-member -- called by the embedded analytics API
+	getEntry(id: number): StoredAuditEntry | undefined {
+		const row = this.database
+			.query(
+				`SELECT al.id, al.agent, al.tool, al.command, al.args_json, al.working_directory, al.workspace_id, al.inputs_json,
+                al.timestamp, al.decision, al.classification, al.matched_rule, al.policy_scope, al.resolved_workspace_id, al.reason,
+                al.session_id, al.tool_use_id,
+                ar.status AS approval_status, ar.resolved_at AS approval_resolved_at
+         FROM audit_log al
+         LEFT JOIN approval_requests ar ON ar.audit_log_id = al.id
+         WHERE al.id = ?`
+			)
+			.get(id) as Record<string, unknown> | null;
+		return row === null ? undefined : rowToAuditEntryWithApproval(row);
+	}
+
+	listRecentCursor(filter: AuditFilter, query: CursorCallQuery): CursorCallPage {
+		validateCursorQuery(query);
+		const projection = query.projection ?? 'full';
+		const rows = this.cursorRows(filter, query, projection);
+		const page = cursorPage(rows, query, projection);
+		if (!query.includeTotal) return page;
+
+		const { where, params } = this.buildFilter(filter);
+		const row = this.database.query(`SELECT COUNT(*) AS count FROM audit_log ${where}`).get(...params) as {
+			count: number;
+		};
+		return {
+			...page,
+			total: row.count,
+			totalPages: Math.max(Math.ceil(row.count / query.pageSize), 1),
+		};
+	}
+
+	private cursorRows(
+		filter: AuditFilter,
+		query: CursorCallQuery,
+		projection: 'full' | 'summary'
+	): Array<Record<string, unknown>> {
+		const { where, params } = this.buildFilter(filter, 'al');
+		const cursorClause = query.cursor === undefined ? where : `${where}${where ? ' AND' : ' WHERE'} al.id < ?`;
+		const cursorParams = query.cursor === undefined ? params : [...params, query.cursor];
+		const select =
+			projection === 'summary'
+				? `al.id, al.agent, al.tool, al.command, al.timestamp, al.decision, al.classification`
+				: `al.id, al.agent, al.tool, al.command, al.args_json, al.working_directory, al.workspace_id, al.inputs_json,
+             al.timestamp, al.decision, al.classification, al.matched_rule, al.policy_scope, al.resolved_workspace_id, al.reason,
+             al.session_id, al.tool_use_id,
+             ar.status AS approval_status, ar.resolved_at AS approval_resolved_at`;
+		const join = projection === 'summary' ? '' : 'LEFT JOIN approval_requests ar ON ar.audit_log_id = al.id';
+		return this.database
+			.query(
+				`SELECT ${select}
+         FROM audit_log al
+         ${join}
+         ${cursorClause}
+         ORDER BY al.id DESC
+         LIMIT ?`
+			)
+			.all(...cursorParams, query.pageSize + 1) as Array<Record<string, unknown>>;
+	}
+
 	listRecentPage(
 		filter: AuditFilter,
 		page: number,
 		pageSize: number
-	): { entries: AuditEntry[]; page: number; pageSize: number; total: number; totalPages: number } {
+	): { entries: StoredAuditEntry[]; page: number; pageSize: number; total: number; totalPages: number } {
 		const { where, params } = this.buildFilter(filter);
 		const row = this.database.query(`SELECT COUNT(*) AS count FROM audit_log ${where}`).get(...params) as {
 			count: number;
@@ -274,9 +474,15 @@ export class AuditLogStore {
 			clauses.push(`${prefix}${column} ${operator} ?`);
 			params.push(value);
 		}
-		if (filter.search !== undefined) {
-			clauses.push(`${prefix}command LIKE ?`);
-			params.push(`%${filter.search}%`);
+		const search = filter.search === undefined ? '' : normalizeSearchText(filter.search).trim();
+		if (this.trigramSearchAvailable && [...search].length >= 3) {
+			clauses.push(`${prefix}id IN (SELECT rowid FROM audit_log_command_fts WHERE audit_log_command_fts MATCH ?)`);
+			params.push(quoteFts5Literal(search));
+		} else if (search.length > 0) {
+			// FTS5's trigram tokenizer cannot answer one- or two-character
+			// queries. instr keeps literal substring semantics for that case.
+			clauses.push(`instr(${prefix}command_search, ?) > 0`);
+			params.push(search);
 		}
 
 		return { where: clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : '', params };
@@ -302,30 +508,29 @@ export class AuditLogStore {
 		const { where, params } = this.buildFilter(filter);
 		const row = this.database
 			.query(
-				`SELECT COUNT(*) AS entries, COUNT(DISTINCT session_id) AS sessions
+				`SELECT COUNT(*) AS entries,
+                COUNT(DISTINCT session_id) AS sessions,
+                json_group_array(DISTINCT agent) AS agents_json,
+                json_group_array(DISTINCT working_directory)
+                  FILTER (WHERE working_directory IS NOT NULL) AS projects_json,
+                json_group_array(DISTINCT resolved_workspace_id)
+                  FILTER (WHERE resolved_workspace_id IS NOT NULL) AS workspaces_json
          FROM audit_log ${where}`
 			)
-			.get(...params) as { entries: number; sessions: number };
-		const agents = this.database
-			.query(`SELECT DISTINCT agent FROM audit_log ${where} ORDER BY agent`)
-			.all(...params) as Array<{ agent: string }>;
-		const projects = this.database
-			.query(
-				`SELECT DISTINCT working_directory FROM audit_log ${where}${where ? ' AND' : ' WHERE'} working_directory IS NOT NULL ORDER BY working_directory`
-			)
-			.all(...params) as Array<{ working_directory: string }>;
-		const workspaces = this.database
-			.query(
-				`SELECT DISTINCT resolved_workspace_id FROM audit_log ${where}${where ? ' AND' : ' WHERE'} resolved_workspace_id IS NOT NULL ORDER BY resolved_workspace_id`
-			)
-			.all(...params) as Array<{ resolved_workspace_id: string }>;
+			.get(...params) as {
+			entries: number;
+			sessions: number;
+			agents_json: string;
+			projects_json: string;
+			workspaces_json: string;
+		};
 
 		return {
 			entries: row.entries,
 			sessions: row.sessions,
-			agents: agents.map((entry) => entry.agent),
-			projects: projects.map((entry) => entry.working_directory),
-			workspaces: workspaces.map((entry) => entry.resolved_workspace_id),
+			agents: safeJsonParse<string[]>(row.agents_json, []).sort(),
+			projects: safeJsonParse<string[]>(row.projects_json, []).sort(),
+			workspaces: safeJsonParse<string[]>(row.workspaces_json, []).sort(),
 		};
 	}
 
@@ -368,6 +573,14 @@ export class AuditLogStore {
 				lastSeen: String(row.last_seen),
 			};
 		});
+	}
+
+	distinctTools(filter: AuditFilter = {}): string[] {
+		const { where, params } = this.buildFilter(filter);
+		const rows = this.database
+			.query(`SELECT DISTINCT tool FROM audit_log ${where} ORDER BY tool`)
+			.all(...params) as Array<{ tool: string }>;
+		return rows.map((row) => row.tool);
 	}
 
 	topCommandsByTool(
@@ -514,7 +727,7 @@ export class AuditLogStore {
 		return [...hotspots.values()];
 	}
 
-	unmatchedEntries(filter: AuditFilter = {}, limit = 2000): AuditEntry[] {
+	unmatchedEntries(filter: AuditFilter = {}, limit = 2000): StoredAuditEntry[] {
 		const { where, params } = this.buildFilter(filter, 'al');
 		const rows = this.database
 			.query(
@@ -560,6 +773,167 @@ export class AuditLogStore {
 
 		return row?.status;
 	}
+}
+
+class ReadOnlyAuditLogReader extends AuditLogReader {
+	constructor(databasePath: string, options: AuditLogConnectionOptions) {
+		const busyTimeout = validatedBusyTimeout(options.busyTimeoutMs);
+		const database = new Database(databasePath, { readonly: true });
+		super(database);
+
+		try {
+			database.exec('PRAGMA query_only = ON');
+			database.exec(`PRAGMA busy_timeout = ${busyTimeout}`);
+			const { user_version: userVersion } = database.query('PRAGMA user_version').get() as {
+				user_version: number;
+			};
+			if (userVersion < SCHEMA_VERSION) {
+				throw new Error(
+					`audit database schema version ${userVersion} is not readable by this Umbod build (expected ${SCHEMA_VERSION}); open it with AuditLogStore to migrate`
+				);
+			}
+			if (userVersion > SCHEMA_VERSION) {
+				throw new Error(
+					`audit database schema version ${userVersion} is newer than this Umbod build supports (expected ${SCHEMA_VERSION})`
+				);
+			}
+			validateReadableSchema(database);
+			if (hasUsableTrigramIndex(database)) this.enableTrigramSearch();
+		} catch (error: unknown) {
+			database.close();
+			throw error;
+		}
+	}
+}
+
+/** Open an analytics-only connection without creating or migrating the database. */
+export function openAuditLogReader(databasePath: string, options: AuditLogConnectionOptions = {}): AuditLogReader {
+	return new ReadOnlyAuditLogReader(databasePath, options);
+}
+
+export class AuditLogStore extends AuditLogReader {
+	constructor(databasePath: string, options: AuditLogStoreOptions = {}) {
+		const busyTimeout = validatedBusyTimeout(options.busyTimeoutMs);
+		const database = new Database(databasePath, { create: true, readwrite: true });
+		super(database);
+
+		try {
+			database.exec(`PRAGMA busy_timeout = ${busyTimeout}`);
+			const userVersion = this.userVersion();
+			if (userVersion > SCHEMA_VERSION) {
+				throw new Error(
+					`audit database schema version ${userVersion} is newer than this Umbod build supports (expected ${SCHEMA_VERSION})`
+				);
+			}
+			if (options.journalMode === 'wal') {
+				const row = database.query('PRAGMA journal_mode = WAL').get() as { journal_mode: string };
+				if (row.journal_mode.toLowerCase() !== 'wal') {
+					throw new Error(`failed to enable WAL journal mode; SQLite returned "${row.journal_mode}"`);
+				}
+			}
+			const trigramSupported = supportsTrigramIndex(database);
+			const searchIndexWasReady = trigramSupported && hasUsableTrigramIndex(database);
+			database
+				.transaction(() => {
+					if (!trigramSupported) {
+						for (const trigger of FTS_TRIGGER_NAMES) database.exec(`DROP TRIGGER IF EXISTS ${trigger}`);
+					}
+					this.migrate(userVersion);
+					this.backfillCommandSearch();
+					database.exec(SCHEMA);
+					if (trigramSupported) {
+						database.exec(FTS_SCHEMA);
+						if (userVersion < 3 || !searchIndexWasReady) {
+							database.exec("INSERT INTO audit_log_command_fts(audit_log_command_fts) VALUES ('rebuild')");
+						}
+						if (!hasUsableTrigramIndex(database)) {
+							throw new Error('failed to initialize the optional FTS5 trigram search index');
+						}
+					}
+					database.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+					validateReadableSchema(database);
+				})
+				.immediate();
+			if (trigramSupported) this.enableTrigramSearch();
+		} catch (error: unknown) {
+			database.close();
+			throw error;
+		}
+	}
+
+	private tableExists(name: string): boolean {
+		return this.database.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name) !== null;
+	}
+
+	private userVersion(): number {
+		const row = this.database.query('PRAGMA user_version').get() as { user_version: number };
+		return Number(row.user_version);
+	}
+
+	// Bring a pre-existing audit_log up to the current shape before SCHEMA
+	// runs, since SCHEMA's indexes and triggers assume the new columns exist.
+	private migrate(userVersion: number): void {
+		if (!this.tableExists('audit_log') || userVersion >= SCHEMA_VERSION) {
+			return;
+		}
+
+		const columns = new Set(
+			(this.database.query('PRAGMA table_info(audit_log)').all() as Array<{ name: string }>).map((row) => row.name)
+		);
+
+		for (let version = userVersion + 1; version <= SCHEMA_VERSION; version += 1) {
+			for (const statement of MIGRATIONS[version] ?? []) {
+				if (statement.addsColumn && columns.has(statement.addsColumn)) {
+					continue;
+				}
+				this.database.exec(statement.sql);
+				if (statement.addsColumn) columns.add(statement.addsColumn);
+			}
+		}
+	}
+
+	private backfillCommandSearch(): void {
+		if (!this.tableExists('audit_log')) return;
+		const columns = new Set(
+			(this.database.query('PRAGMA table_info(audit_log)').all() as Array<{ name: string }>).map((row) => row.name)
+		);
+		if (!columns.has('command_search')) return;
+
+		const rows = this.database.query('SELECT id, command FROM audit_log WHERE command_search IS NULL').all() as Array<{
+			id: number;
+			command: string;
+		}>;
+		if (rows.length === 0) return;
+		const update = this.database.query('UPDATE audit_log SET command_search = ? WHERE id = ?');
+		for (const row of rows) update.run(normalizeSearchText(row.command), row.id);
+	}
+
+	append(call: ToolCall, result: EvaluationResult): { entryId: number; approvalRequestId?: number } {
+		const timestamp = call.timestamp ?? new Date().toISOString();
+		const insertEntry = this.database.query(
+			`INSERT INTO audit_log (
+        agent, tool, command, command_search, args_json, working_directory, workspace_id, inputs_json, timestamp,
+        decision, classification, matched_rule, policy_scope, resolved_workspace_id, reason, session_id, tool_use_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`
+		);
+		const insertApproval = this.database.query(
+			'INSERT INTO approval_requests (audit_log_id, created_at) VALUES (?, ?) RETURNING id'
+		);
+
+		const appended = this.database.transaction(() => {
+			const row = insertEntry.get(...auditEntryValues(call, result, timestamp)) as { id: number };
+			let approvalRequestId: number | undefined;
+
+			if (result.decision === 'approve') {
+				const approvalRow = insertApproval.get(row.id, timestamp) as { id: number };
+				approvalRequestId = approvalRow.id;
+			}
+
+			return { entryId: row.id, approvalRequestId };
+		})();
+		this.noteMutation();
+		return appended;
+	}
 
 	resolveApprovalRequest(
 		id: number,
@@ -574,6 +948,8 @@ export class AuditLogStore {
 			)
 			.run(status, resolvedAt, id);
 
-		return result.changes > 0;
+		const changed = result.changes > 0;
+		if (changed) this.noteMutation();
+		return changed;
 	}
 }

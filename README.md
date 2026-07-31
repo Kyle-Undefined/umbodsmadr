@@ -154,3 +154,24 @@ Bun.serve({ port: 9090, fetch: (req) => umbod.fetch(req) ?? new Response('not fo
 ```
 
 `umbod.fetch` serves the same `/health` and `/api/*` contract as the CLI server (minus the dashboard), so generated hooks work unchanged against either. Approvals surface through `listPendingApprovals()` / `resolveApproval()`, or pass `approvalPrompt` to wire them into your own UI.
+
+For a host that only reads analytics, initialize or migrate the database once through `createUmbod` or `AuditLogStore`, then open a reader that cannot write:
+
+```ts
+import { createAnalyticsReader } from '@umbod/core';
+
+const analytics = createAnalyticsReader({ dbPath: 'umbod.dev.db', manifest });
+const snapshot = analytics.snapshot({ projection: 'summary' });
+const calls = analytics.listCalls(
+	{ search: 'git status' },
+	{ pageSize: 25, projection: 'summary', includeTotal: false }
+);
+const detail = calls.entries[0] ? analytics.getCall(calls.entries[0].id) : undefined;
+analytics.close();
+```
+
+The reader does not create or migrate databases. Its `revision()` value is only comparable across reads from that same open reader. Cache keys must also include the manifest and query options.
+
+If a writable Umbod instance and an analytics reader will be active together, opt the writer into WAL with `auditLogOptions: { journalMode: 'wal' }`. The CLI server does this automatically. WAL is persistent, so embedded hosts must opt in deliberately.
+
+The embedded API keeps numbered, full-entry call pages as its default. Consumers can opt into the lean path with `/api/analytics/calls?pagination=cursor&cursor=start&projection=summary&includeTotal=0`, load one full entry from `/api/analytics/calls/:id`, or fetch both summary reports from `/api/analytics/snapshot?projection=summary`.

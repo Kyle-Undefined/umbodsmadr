@@ -1,5 +1,5 @@
 import type { Manifest, WorkspaceConfig } from '../core/types.ts';
-import type { AuditLogStore } from '../db/audit-log.ts';
+import type { AuditLogReader } from '../db/audit-log.ts';
 import { isPathWithinWorkspaceRoot, normalizeWorkspaceRoot } from '../policy/workspace.ts';
 import { readSessionToolCalls } from '../sessions/index.ts';
 import type { SessionLogSource, SessionToolCall } from '../sessions/types.ts';
@@ -227,7 +227,7 @@ function coverageNotes(
  * coverage in repeated commands such as polling or status checks.
  */
 export async function computeCoverage(
-	auditLog: AuditLogStore,
+	auditLog: AuditLogReader,
 	sources: SessionLogSource[],
 	query: CoverageQuery = {}
 ): Promise<CoverageReport> {

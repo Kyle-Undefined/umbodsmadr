@@ -9,7 +9,44 @@ import type { EvaluationResult, ToolCall } from '../../src/core/types.ts';
 import { makeCall, makeManifest } from '../helpers.ts';
 
 let tempDir: string;
-let store: AuditLogStore;
+
+class CountingAuditLogStore extends AuditLogStore {
+	aggregateToolUsageCalls = 0;
+	topCommandsCalls = 0;
+	taskTypeCalls = 0;
+	distinctToolsCalls = 0;
+
+	override aggregateToolUsage(
+		filter: Parameters<AuditLogStore['aggregateToolUsage']>[0] = {}
+	): ReturnType<AuditLogStore['aggregateToolUsage']> {
+		this.aggregateToolUsageCalls += 1;
+		return super.aggregateToolUsage(filter);
+	}
+
+	override topCommandsByTool(
+		filter: Parameters<AuditLogStore['topCommandsByTool']>[0] = {},
+		limitPerTool?: number
+	): ReturnType<AuditLogStore['topCommandsByTool']> {
+		this.topCommandsCalls += 1;
+		return super.topCommandsByTool(filter, limitPerTool);
+	}
+
+	override aggregateTaskTypes(
+		filter: Parameters<AuditLogStore['aggregateTaskTypes']>[0] = {}
+	): ReturnType<AuditLogStore['aggregateTaskTypes']> {
+		this.taskTypeCalls += 1;
+		return super.aggregateTaskTypes(filter);
+	}
+
+	override distinctTools(
+		filter: Parameters<AuditLogStore['distinctTools']>[0] = {}
+	): ReturnType<AuditLogStore['distinctTools']> {
+		this.distinctToolsCalls += 1;
+		return super.distinctTools(filter);
+	}
+}
+
+let store: CountingAuditLogStore;
 
 function makeResult(overrides: Partial<EvaluationResult> = {}): EvaluationResult {
 	return {
@@ -26,7 +63,7 @@ function seed(call: Partial<ToolCall>, result: Partial<EvaluationResult> = {}): 
 
 beforeEach(() => {
 	tempDir = mkdtempSync(join(tmpdir(), 'umbod-analytics-test-'));
-	store = new AuditLogStore(join(tempDir, 'test.db'));
+	store = new CountingAuditLogStore(join(tempDir, 'test.db'));
 });
 
 afterEach(() => {
@@ -51,6 +88,7 @@ describe('analytics > tool usage', () => {
 		expect(bash?.topCommands[0]).toEqual({ command: 'git status', count: 2 });
 
 		expect(stats.totals.entries).toBe(4);
+		expect(store.aggregateToolUsageCalls).toBe(1);
 	});
 
 	test('groups task types by working directory and classification', () => {
@@ -64,6 +102,22 @@ describe('analytics > tool usage', () => {
 		const projA = stats.byTaskType.find((row) => row.workingDirectory === '/home/x/proj-a');
 		expect(projA?.count).toBe(2);
 		expect(projA?.classification).toBe('readonly');
+	});
+
+	test('summary projection skips drill-down scans', () => {
+		seed({ tool: 'bash', command: 'git status' });
+
+		const stats = computeToolUsage(store, makeManifest(), { projection: 'summary' });
+
+		expect(stats.projection).toBe('summary');
+		expect(stats.totals.entries).toBe(1);
+		expect(stats.byTool[0]?.topCommands).toEqual([]);
+		expect(stats.byTaskType).toEqual([]);
+		expect(stats.unusedTools).toEqual([]);
+		expect(store.aggregateToolUsageCalls).toBe(1);
+		expect(store.topCommandsCalls).toBe(0);
+		expect(store.taskTypeCalls).toBe(0);
+		expect(store.distinctToolsCalls).toBe(0);
 	});
 
 	test('counts distinct sessions', () => {
@@ -82,6 +136,7 @@ describe('analytics > tool usage', () => {
 
 		const stats = computeToolUsage(store, makeManifest(), { since: '2025-01-01T00:00:00.000Z' });
 		expect(stats.totals.entries).toBe(1);
+		expect(store.aggregateToolUsageCalls).toBe(2);
 	});
 
 	test('flags historical tools unused in the recent window', () => {

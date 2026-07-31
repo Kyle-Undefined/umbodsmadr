@@ -109,6 +109,19 @@ function indexNames(path: string): Set<string> {
 	return indexes;
 }
 
+function tableNames(path: string): Set<string> {
+	const db = new Database(path);
+	const tables = new Set(
+		(
+			db.query("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{
+				name: string;
+			}>
+		).map((row) => row.name)
+	);
+	db.close();
+	return tables;
+}
+
 beforeEach(() => {
 	tempDir = mkdtempSync(join(tmpdir(), 'umbod-migration-test-'));
 	dbPath = join(tempDir, 'test.db');
@@ -129,10 +142,47 @@ describe('audit log > migration', () => {
 		expect(columns.has('workspace_id')).toBe(true);
 		expect(columns.has('policy_scope')).toBe(true);
 		expect(columns.has('resolved_workspace_id')).toBe(true);
+		expect(columns.has('command_search')).toBe(true);
 		const indexes = indexNames(dbPath);
 		expect(indexes.has('audit_log_workspace_timestamp_idx')).toBe(true);
 		expect(indexes.has('audit_log_approval_hotspot_idx')).toBe(true);
+		expect(tableNames(dbPath).has('audit_log_command_fts')).toBe(true);
 		expect(userVersion(dbPath)).toBe(SCHEMA_VERSION);
+	});
+
+	test('fresh schema remains writable by pre-search INSERT statements', () => {
+		const store = new AuditLogStore(dbPath);
+		store.close();
+		const legacyWriter = new Database(dbPath);
+		legacyWriter
+			.query(
+				`INSERT INTO audit_log (
+          agent, tool, command, args_json, working_directory, inputs_json, timestamp,
+          decision, classification, matched_rule, reason
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+			)
+			.run(
+				'codex',
+				'bash',
+				'Grímr old writer',
+				'[]',
+				null,
+				'{}',
+				'2026-07-31T12:00:00.000Z',
+				'allow',
+				'readonly',
+				null,
+				'legacy insert'
+			);
+		const inserted = legacyWriter.query('SELECT command_search FROM audit_log').get() as {
+			command_search: string | null;
+		};
+		expect(inserted.command_search).toBeNull();
+		legacyWriter.close();
+
+		const repaired = new AuditLogStore(dbPath);
+		expect(repaired.listRecentPage({ search: 'grimr' }, 1, 20).entries).toHaveLength(1);
+		repaired.close();
 	});
 
 	test('legacy database gains columns and backfills from inputs_json', () => {
@@ -150,6 +200,23 @@ describe('audit log > migration', () => {
 		const withoutSession = entries.find((entry) => entry.command === 'ls');
 		expect(withoutSession?.sessionId).toBeUndefined();
 		expect(withoutSession?.toolUseId).toBeUndefined();
+
+		const migratedSearch = new AuditLogStore(dbPath);
+		expect(migratedSearch.listRecentPage({ search: 'STATUS' }, 1, 20).entries).toHaveLength(1);
+		migratedSearch.close();
+	});
+
+	test('rolls back every migration phase when search-index setup fails', () => {
+		seedLegacyDatabase();
+		const sabotage = new Database(dbPath);
+		sabotage.exec('CREATE TABLE audit_log_command_fts (wrong_shape TEXT)');
+		sabotage.close();
+		const beforeColumns = tableColumns(dbPath);
+
+		expect(() => new AuditLogStore(dbPath)).toThrow();
+
+		expect(tableColumns(dbPath)).toEqual(beforeColumns);
+		expect(userVersion(dbPath)).toBe(0);
 	});
 
 	test('reopening a migrated database is idempotent', () => {

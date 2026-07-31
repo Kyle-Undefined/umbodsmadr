@@ -10,7 +10,8 @@ export type {
 	UmbodOptions,
 } from './server/api.ts';
 
-export { AuditLogStore } from './db/audit-log.ts';
+export { AuditLogReader, AuditLogStore, openAuditLogReader } from './db/audit-log.ts';
+export type { AuditLogConnectionOptions, AuditLogStoreOptions } from './db/audit-log.ts';
 export { PolicyEngine } from './policy/engine.ts';
 export {
 	isAbsoluteWorkspaceRoot,
@@ -35,11 +36,19 @@ export { logger } from './utils/logger.ts';
 export { computeToolUsage } from './analytics/tool-usage.ts';
 export { analyzeRules } from './analytics/rule-analysis.ts';
 export { suggestRules } from './analytics/suggestions.ts';
+export { computeAnalyticsSnapshot } from './analytics/snapshot.ts';
+export { createAnalyticsReader } from './analytics/reader.ts';
+export type { AnalyticsReader, AnalyticsReaderOptions } from './analytics/reader.ts';
 export { computeCoverage, scopeCoverageSources } from './analytics/coverage.ts';
 export { readSessionToolCalls } from './sessions/index.ts';
 export type {
 	AnalyticsWindow,
+	AnalyticsSnapshot,
+	AnalyticsSnapshotQuery,
 	AuditFilter,
+	AuditEntrySummary,
+	CursorCallPage,
+	CursorCallQuery,
 	ToolUsageQuery,
 	ToolUsageStats,
 	RuleAnalysis,

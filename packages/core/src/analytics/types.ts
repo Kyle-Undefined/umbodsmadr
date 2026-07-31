@@ -1,4 +1,4 @@
-import type { ApprovalDecision, CallClassification } from '../core/types.ts';
+import type { ApprovalDecision, CallClassification, StoredAuditEntry } from '../core/types.ts';
 
 export interface AnalyticsWindow {
 	since?: string;
@@ -18,9 +18,39 @@ export interface AuditFilter extends AnalyticsWindow {
 	search?: string;
 }
 
+export interface AuditEntrySummary {
+	id: number;
+	agent: string;
+	tool: string;
+	command: string;
+	timestamp: string;
+	decision: ApprovalDecision;
+	classification: CallClassification;
+}
+
+export interface CursorCallPage {
+	entries: Array<StoredAuditEntry | AuditEntrySummary>;
+	pageSize: number;
+	hasMore: boolean;
+	nextCursor: string | null;
+	/** Complete filtered count, included only when requested. */
+	total?: number;
+	totalPages?: number;
+}
+
+export interface CursorCallQuery {
+	/** Last id from the preceding page. Omit for the first page. */
+	cursor?: number;
+	pageSize: number;
+	includeTotal?: boolean;
+	projection?: 'full' | 'summary';
+}
+
 export type DecisionCounts = Record<ApprovalDecision, number>;
 
 export interface ToolUsageQuery extends AuditFilter {
+	/** Summary skips top-command, task-type, and unused-tool detail. Default full. */
+	projection?: 'full' | 'summary';
 	/** Window (days) used for "unused recently" detection. Default 14. */
 	recentWindowDays?: number;
 	/** Top commands listed per tool. Default 5. */
@@ -54,6 +84,7 @@ export interface UnusedTool {
 }
 
 export interface ToolUsageStats {
+	projection: 'full' | 'summary';
 	window: AnalyticsWindow;
 	totals: {
 		entries: number;
@@ -65,6 +96,30 @@ export interface ToolUsageStats {
 	byTool: ToolUsageRow[];
 	byTaskType: TaskTypeRow[];
 	unusedTools: UnusedTool[];
+}
+
+export interface AnalyticsSnapshotQuery extends AnalyticsWindow {
+	agent?: string;
+	/** Exact working_directory match. */
+	project?: string;
+	/** Exact resolved workspace id match. */
+	workspace?: string;
+	/** Summary keeps consumer-facing totals and rule health while skipping drill-down data. */
+	projection?: 'full' | 'summary';
+	recentWindowDays?: number;
+	topCommandsPerTool?: number;
+	minOccurrences?: number;
+	replayLimit?: number;
+}
+
+export interface AnalyticsSnapshot {
+	tools: ToolUsageStats;
+	rules: RuleAnalysis;
+	/**
+	 * Opaque cache token for this open audit reader. Omitted if the database
+	 * changed while the snapshot was computed.
+	 */
+	revision?: string;
 }
 
 export interface MatchedRuleCount {
@@ -179,6 +234,7 @@ export interface CoverageReport {
 }
 
 export interface RuleAnalysis {
+	projection: 'full' | 'summary';
 	window: AnalyticsWindow;
 	workspaceId?: string;
 	rules: RuleFinding[];

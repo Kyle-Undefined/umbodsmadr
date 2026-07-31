@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 
 export const SCHEMA = `
 CREATE TABLE IF NOT EXISTS audit_log (
@@ -6,6 +6,7 @@ CREATE TABLE IF NOT EXISTS audit_log (
   agent TEXT NOT NULL,
   tool TEXT NOT NULL,
   command TEXT NOT NULL,
+  command_search TEXT,
 	  args_json TEXT,
 	  working_directory TEXT,
 	  workspace_id TEXT,
@@ -61,6 +62,41 @@ CREATE INDEX IF NOT EXISTS audit_log_approval_hotspot_idx
   );
 `;
 
+export const FTS_SCHEMA = `
+CREATE VIRTUAL TABLE IF NOT EXISTS audit_log_command_fts USING fts5(
+  command_search,
+  content = 'audit_log',
+  content_rowid = 'id',
+  tokenize = 'trigram'
+);
+
+CREATE TRIGGER IF NOT EXISTS audit_log_command_fts_insert
+AFTER INSERT ON audit_log BEGIN
+  INSERT INTO audit_log_command_fts(rowid, command_search)
+  VALUES (new.id, new.command_search);
+END;
+
+CREATE TRIGGER IF NOT EXISTS audit_log_command_fts_delete
+AFTER DELETE ON audit_log BEGIN
+  INSERT INTO audit_log_command_fts(audit_log_command_fts, rowid, command_search)
+  VALUES ('delete', old.id, old.command_search);
+END;
+
+CREATE TRIGGER IF NOT EXISTS audit_log_command_fts_update
+AFTER UPDATE OF command_search ON audit_log BEGIN
+  INSERT INTO audit_log_command_fts(audit_log_command_fts, rowid, command_search)
+  VALUES ('delete', old.id, old.command_search);
+  INSERT INTO audit_log_command_fts(rowid, command_search)
+  VALUES (new.id, new.command_search);
+END;
+`;
+
+export const FTS_TRIGGER_NAMES = [
+	'audit_log_command_fts_insert',
+	'audit_log_command_fts_delete',
+	'audit_log_command_fts_update',
+] as const;
+
 interface MigrationStatement {
 	sql: string;
 	/** Skip this statement when the column already exists on audit_log. */
@@ -89,4 +125,5 @@ export const MIGRATIONS: Record<number, MigrationStatement[]> = {
 		},
 		{ sql: `UPDATE audit_log SET policy_scope = 'global' WHERE policy_scope IS NULL` },
 	],
+	3: [{ sql: 'ALTER TABLE audit_log ADD COLUMN command_search TEXT', addsColumn: 'command_search' }],
 };
