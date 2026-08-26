@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 6;
+export const SCHEMA_VERSION = 7;
 
 export const SCHEMA = `
 CREATE TABLE IF NOT EXISTS audit_log (
@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS audit_log (
   classification TEXT NOT NULL,
 	  matched_rule TEXT,
 	  matched_rule_mode TEXT,
+	  matched_selectors_json TEXT,
 	  policy_scope TEXT,
 	  resolved_workspace_id TEXT,
 	  reason TEXT NOT NULL,
@@ -136,4 +137,5 @@ export const MIGRATIONS: Record<number, MigrationStatement[]> = {
 	],
 	5: [{ sql: 'ALTER TABLE audit_log ADD COLUMN operation TEXT', addsColumn: 'operation' }],
 	6: [{ sql: 'ALTER TABLE audit_log ADD COLUMN matched_rule_mode TEXT', addsColumn: 'matched_rule_mode' }],
+	7: [{ sql: 'ALTER TABLE audit_log ADD COLUMN matched_selectors_json TEXT', addsColumn: 'matched_selectors_json' }],
 };

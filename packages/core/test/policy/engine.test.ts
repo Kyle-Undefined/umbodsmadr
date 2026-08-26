@@ -96,6 +96,31 @@ describe('engine > structured policy', () => {
 		expect(result).toMatchObject({ decision: 'allow', matchedRule: 'host-read' });
 	});
 
+	test('supports resolved workspace selectors, any matching, priority, and selector attribution', () => {
+		const result = new PolicyEngine(
+			makeManifest({
+				structuredRules: [
+					{ id: 'low', decision: 'block', tools: ['read'], priority: 1 },
+					{
+						id: 'high',
+						decision: 'allow',
+						tools: ['write'],
+						workspaces: ['repo'],
+						selectorMode: 'any',
+						priority: 10,
+					},
+				],
+				workspaces: [{ id: 'repo', roots: ['/work/repo'], rules: {} }],
+			})
+		).evaluate(makeCall({ tool: 'read', command: '/work/repo/file', workingDirectory: '/work/repo' }));
+		expect(result).toMatchObject({
+			decision: 'allow',
+			matchedRule: 'high',
+			matchedSelectors: ['workspaces'],
+			resolvedWorkspaceId: 'repo',
+		});
+	});
+
 	test('global guards cannot be relaxed by workspace or legacy allows', () => {
 		const engine = new PolicyEngine(
 			makeManifest({

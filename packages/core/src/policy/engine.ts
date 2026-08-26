@@ -31,13 +31,20 @@ function resolvePolicyContext(
 	classification: Classification
 ): PolicyContext {
 	const resolution = resolveWorkspace(manifest, call);
-	const globalGuard = compiled.matchGlobalGuard(call, classification);
+	const policyCall = resolution.workspace ? { ...call, workspaceId: resolution.workspace.id } : call;
+	const globalGuard = compiled.matchGlobalGuard(policyCall, classification);
 	if (globalGuard) return policyContext(resolution, globalGuard, 'global', manifest, classification);
-	const workspaceGuard = compiled.matchWorkspaceGuard(resolution.workspace, call, classification);
+	const workspaceGuard = compiled.matchWorkspaceGuard(resolution.workspace, policyCall, classification);
 	if (workspaceGuard) return policyContext(resolution, workspaceGuard, 'workspace', manifest, classification);
-	const workspaceMatch = compiled.matchWorkspaceRule(resolution.workspace, call, classification);
+	const workspaceMatch = compiled.matchWorkspaceRule(resolution.workspace, policyCall, classification);
 	if (workspaceMatch) return policyContext(resolution, workspaceMatch, 'workspace', manifest, classification);
-	return policyContext(resolution, compiled.matchGlobalRule(call, classification), 'global', manifest, classification);
+	return policyContext(
+		resolution,
+		compiled.matchGlobalRule(policyCall, classification),
+		'global',
+		manifest,
+		classification
+	);
 }
 
 function policyContext(
@@ -106,6 +113,7 @@ function matchedRuleResult(context: PolicyContext, classification: Classificatio
 		classification,
 		matchedRule: pattern,
 		matchedRuleMode: match.mode === 'warn' ? 'warn' : 'enforce',
+		matchedSelectors: match.matchedSelectors,
 		policyScope: context.policyScope,
 		resolvedWorkspaceId: workspaceId,
 		reason:
@@ -222,10 +230,11 @@ export class PolicyEngine {
 	evaluateWithTrace(call: ToolCall): PolicyEvaluationTrace {
 		const classification = classifyToolCall(call);
 		const context = resolvePolicyContext(this.manifest, this.compiled, call, classification);
+		const tracedCall = context.resolution.workspace ? { ...call, workspaceId: context.resolution.workspace.id } : call;
 		const tracedMatches =
 			context.resolution.source === 'unresolved'
 				? []
-				: this.compiled.traceMatches(context.resolution.workspace, call, classification);
+				: this.compiled.traceMatches(context.resolution.workspace, tracedCall, classification);
 		let result: EvaluationResult;
 		if (context.resolution.source === 'unresolved') {
 			result = unresolvedWorkspaceResult(context, classification);

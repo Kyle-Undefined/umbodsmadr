@@ -83,6 +83,7 @@ function rowToAuditEntry(row: Record<string, unknown>): StoredAuditEntry {
 		classification: enumValue(row.classification, VALID_CLASSIFICATIONS, 'classification in audit log row'),
 		matchedRule: optionalString(row.matched_rule),
 		matchedRuleMode: optionalString(row.matched_rule_mode) as EvaluationResult['matchedRuleMode'],
+		matchedSelectors: safeJsonParse<string[]>(row.matched_selectors_json, []),
 		policyScope: optionalString(row.policy_scope) as AuditEntry['policyScope'],
 		resolvedWorkspaceId: optionalString(row.resolved_workspace_id),
 		reason: String(row.reason),
@@ -151,6 +152,7 @@ function auditEntryValues(
 		result.classification,
 		nullable(result.matchedRule),
 		nullable(result.matchedRuleMode),
+		jsonOr(result.matchedSelectors, []),
 		result.policyScope === undefined ? 'global' : result.policyScope,
 		nullable(result.resolvedWorkspaceId),
 		result.reason,
@@ -204,6 +206,7 @@ function validateReadableSchema(database: Database): void {
 		'classification',
 		'matched_rule',
 		'matched_rule_mode',
+		'matched_selectors_json',
 		'policy_scope',
 		'resolved_workspace_id',
 		'reason',
@@ -342,7 +345,7 @@ export class AuditLogReader {
 
 	listRecent(limit?: number): StoredAuditEntry[] {
 		let sql = `SELECT al.id, al.agent, al.tool, al.operation, al.command, al.args_json, al.working_directory, al.workspace_id, al.inputs_json,
-                al.timestamp, al.decision, al.classification, al.matched_rule, al.matched_rule_mode, al.policy_scope, al.resolved_workspace_id, al.reason,
+                al.timestamp, al.decision, al.classification, al.matched_rule, al.matched_rule_mode, al.matched_selectors_json, al.policy_scope, al.resolved_workspace_id, al.reason,
                 al.session_id, al.tool_use_id, al.policy_hash, al.policy_generation,
                 ar.status AS approval_status, ar.resolved_at AS approval_resolved_at
          FROM audit_log al
@@ -361,7 +364,7 @@ export class AuditLogReader {
 		const rows = this.database
 			.query(
 				`SELECT al.id, al.agent, al.tool, al.operation, al.command, al.args_json, al.working_directory, al.workspace_id, al.inputs_json,
-                al.timestamp, al.decision, al.classification, al.matched_rule, al.matched_rule_mode, al.policy_scope, al.resolved_workspace_id, al.reason,
+                al.timestamp, al.decision, al.classification, al.matched_rule, al.matched_rule_mode, al.matched_selectors_json, al.policy_scope, al.resolved_workspace_id, al.reason,
                 al.session_id, al.tool_use_id, al.policy_hash, al.policy_generation,
                 ar.status AS approval_status, ar.resolved_at AS approval_resolved_at
          FROM audit_log al
@@ -387,7 +390,7 @@ export class AuditLogReader {
 		const row = this.database
 			.query(
 				`SELECT al.id, al.agent, al.tool, al.operation, al.command, al.args_json, al.working_directory, al.workspace_id, al.inputs_json,
-                al.timestamp, al.decision, al.classification, al.matched_rule, al.matched_rule_mode, al.policy_scope, al.resolved_workspace_id, al.reason,
+                al.timestamp, al.decision, al.classification, al.matched_rule, al.matched_rule_mode, al.matched_selectors_json, al.policy_scope, al.resolved_workspace_id, al.reason,
                 al.session_id, al.tool_use_id, al.policy_hash, al.policy_generation,
                 ar.status AS approval_status, ar.resolved_at AS approval_resolved_at
          FROM audit_log al
@@ -428,7 +431,7 @@ export class AuditLogReader {
 			projection === 'summary'
 				? `al.id, al.agent, al.tool, al.operation, al.command, al.timestamp, al.decision, al.classification`
 				: `al.id, al.agent, al.tool, al.operation, al.command, al.args_json, al.working_directory, al.workspace_id, al.inputs_json,
-             al.timestamp, al.decision, al.classification, al.matched_rule, al.matched_rule_mode, al.policy_scope, al.resolved_workspace_id, al.reason,
+             al.timestamp, al.decision, al.classification, al.matched_rule, al.matched_rule_mode, al.matched_selectors_json, al.policy_scope, al.resolved_workspace_id, al.reason,
              al.session_id, al.tool_use_id, al.policy_hash, al.policy_generation,
              ar.status AS approval_status, ar.resolved_at AS approval_resolved_at`;
 		const join = projection === 'summary' ? '' : 'LEFT JOIN approval_requests ar ON ar.audit_log_id = al.id';
@@ -467,7 +470,7 @@ export class AuditLogReader {
 			.query(
 				`SELECT ar.id AS approval_id, ar.audit_log_id, ar.status, ar.created_at, ar.resolved_at,
 	                al.agent, al.tool, al.operation, al.command, al.args_json, al.working_directory, al.workspace_id, al.inputs_json,
-	                al.timestamp, al.decision, al.classification, al.matched_rule, al.matched_rule_mode, al.policy_scope, al.resolved_workspace_id, al.reason,
+	                al.timestamp, al.decision, al.classification, al.matched_rule, al.matched_rule_mode, al.matched_selectors_json, al.policy_scope, al.resolved_workspace_id, al.reason,
 	                al.session_id, al.tool_use_id, al.policy_hash, al.policy_generation
          FROM approval_requests ar
          JOIN audit_log al ON al.id = ar.audit_log_id
@@ -767,7 +770,7 @@ export class AuditLogReader {
 		const rows = this.database
 			.query(
 				`SELECT al.id, al.agent, al.tool, al.operation, al.command, al.args_json, al.working_directory, al.workspace_id, al.inputs_json,
-                al.timestamp, al.decision, al.classification, al.matched_rule, al.matched_rule_mode, al.policy_scope, al.resolved_workspace_id, al.reason,
+                al.timestamp, al.decision, al.classification, al.matched_rule, al.matched_rule_mode, al.matched_selectors_json, al.policy_scope, al.resolved_workspace_id, al.reason,
                 al.session_id, al.tool_use_id, al.policy_hash, al.policy_generation,
                 ar.status AS approval_status, ar.resolved_at AS approval_resolved_at
          FROM audit_log al
@@ -952,9 +955,9 @@ export class AuditLogStore extends AuditLogReader {
 		const insertEntry = this.database.query(
 			`INSERT INTO audit_log (
         agent, tool, operation, command, command_search, args_json, working_directory, workspace_id, inputs_json, timestamp,
-        decision, classification, matched_rule, matched_rule_mode, policy_scope, resolved_workspace_id, reason, session_id, tool_use_id,
+        decision, classification, matched_rule, matched_rule_mode, matched_selectors_json, policy_scope, resolved_workspace_id, reason, session_id, tool_use_id,
         policy_hash, policy_generation
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`
 		);
 		const insertApproval = this.database.query(
 			'INSERT INTO approval_requests (audit_log_id, created_at) VALUES (?, ?) RETURNING id'

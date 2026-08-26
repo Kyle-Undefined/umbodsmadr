@@ -205,10 +205,13 @@ function normalizeStructuredEntries(raw: unknown, scope: string, guard: boolean)
 			classifications: classifications as CallClassification[] | undefined,
 			agents: normalizeStringList(value.agents, `${scope} "${id}".agents`),
 			operations,
+			workspaces: normalizeStringList(value.workspaces, `${scope} "${id}".workspaces`),
 			reason: typeof value.reason === 'string' && value.reason.trim() ? value.reason.trim() : undefined,
 			mode: normalizeRuleMode(value.mode, `${scope} "${id}".mode`),
 			expiresAt: normalizeExpiry(value.expires_at, `${scope} "${id}".expires_at`),
 			maxUses: normalizeMaxUses(value.max_uses, `${scope} "${id}".max_uses`),
+			selectorMode: normalizeSelectorMode(value, `${scope} "${id}"`),
+			priority: normalizePriority(value.priority, `${scope} "${id}".priority`),
 		};
 		if (
 			!entry.tools &&
@@ -216,7 +219,8 @@ function normalizeStructuredEntries(raw: unknown, scope: string, guard: boolean)
 			!entry.paths &&
 			!entry.classifications &&
 			!entry.agents &&
-			!entry.operations
+			!entry.operations &&
+			!entry.workspaces
 		) {
 			throw new Error(`manifest ${scope} "${id}" must define at least one selector`);
 		}
@@ -245,6 +249,27 @@ function normalizeMaxUses(value: unknown, field: string): number | undefined {
 	if (!Number.isSafeInteger(value) || (value as number) <= 0) {
 		throw new Error(`manifest ${field} must be a positive integer`);
 	}
+	return value as number;
+}
+
+function optionalBoolean(value: unknown, field: string): boolean | undefined {
+	if (value !== undefined && typeof value !== 'boolean') throw new Error(`manifest ${field} must be boolean`);
+	return value as boolean | undefined;
+}
+
+function normalizeSelectorMode(value: Record<string, unknown>, field: string): 'all' | 'any' | undefined {
+	const requiresAll = optionalBoolean(value.requires_all, `${field}.requires_all`);
+	const requiresAny = optionalBoolean(value.requires_any, `${field}.requires_any`);
+	if (requiresAll === true && requiresAny === true) {
+		throw new Error(`manifest ${field} cannot require both all and any`);
+	}
+	if (requiresAny === true || requiresAll === false) return 'any';
+	return requiresAll === true || requiresAny === false ? 'all' : undefined;
+}
+
+function normalizePriority(value: unknown, field: string): number | undefined {
+	if (value === undefined) return undefined;
+	if (!Number.isSafeInteger(value)) throw new Error(`manifest ${field} must be an integer`);
 	return value as number;
 }
 

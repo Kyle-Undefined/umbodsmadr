@@ -358,6 +358,30 @@ expect = "allow"
 		});
 		expect(manifest.tests?.[0]).toMatchObject({ id: 'read-is-allowed', expect: 'allow' });
 	});
+
+	test('supports workspace selectors, any-selector semantics, and priority', async () => {
+		const path = writeToml(`
+[env]
+name = "test"
+version = "1.0.0"
+timeout = 5
+[policy]
+default_unknown = "block"
+approval_method = "web"
+[[rule]]
+id = "targeted"
+decision = "allow"
+tools = ["read"]
+workspaces = ["repo"]
+requires_any = true
+priority = 20
+`);
+		expect((await loadManifest(path)).structuredRules?.[0]).toMatchObject({
+			workspaces: ['repo'],
+			selectorMode: 'any',
+			priority: 20,
+		});
+	});
 });
 
 describe('loadManifest > structured policy validation', () => {

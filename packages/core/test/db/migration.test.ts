@@ -147,6 +147,7 @@ describe('audit log > migration', () => {
 		expect(columns.has('policy_generation')).toBe(true);
 		expect(columns.has('operation')).toBe(true);
 		expect(columns.has('matched_rule_mode')).toBe(true);
+		expect(columns.has('matched_selectors_json')).toBe(true);
 		const indexes = indexNames(dbPath);
 		expect(indexes.has('audit_log_workspace_timestamp_idx')).toBe(true);
 		expect(indexes.has('audit_log_approval_hotspot_idx')).toBe(true);
@@ -236,6 +237,7 @@ describe('audit log > migration', () => {
 		expect(entries).toHaveLength(2);
 	});
 
+	// fallow-ignore-next-line complexity -- one round-trip assertion covers every additive audit provenance field.
 	test('append stores session, workspace, and policy provenance columns', () => {
 		const store = new AuditLogStore(dbPath);
 		store.append(
@@ -252,6 +254,9 @@ describe('audit log > migration', () => {
 			{
 				decision: 'allow',
 				classification: 'readonly',
+				matchedRule: 'repo-read',
+				matchedRuleMode: 'warn',
+				matchedSelectors: ['operations', 'workspaces'],
 				policyScope: 'workspace',
 				resolvedWorkspaceId: 'client',
 				reason: 'auto-allowed readonly tool call',
@@ -267,6 +272,8 @@ describe('audit log > migration', () => {
 		expect(entry?.operation).toBe('git.status');
 		expect(entry?.policyScope).toBe('workspace');
 		expect(entry?.resolvedWorkspaceId).toBe('client');
+		expect(entry?.matchedRuleMode).toBe('warn');
+		expect(entry?.matchedSelectors).toEqual(['operations', 'workspaces']);
 		expect(entry?.policyHash).toBe('abc123');
 		expect(entry?.policyGeneration).toBe(7);
 	});

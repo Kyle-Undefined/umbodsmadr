@@ -18,6 +18,8 @@ export interface CompiledPolicyMatch {
 	scope?: 'global' | 'workspace';
 	mode?: 'enforce' | 'warn' | 'observe';
 	maxUses?: number;
+	matchedSelectors?: string[];
+	priority?: number;
 }
 
 interface EvaluationInputs {
@@ -44,16 +46,51 @@ function optionalSelectorMatches<T>(configured: T[] | undefined, predicate: (val
 	return configured === undefined || configured.some(predicate);
 }
 
-function matchesSelectors(rule: StructuredRule | PolicyGuard, inputs: EvaluationInputs): boolean {
+function matchedSelectorKinds(rule: StructuredRule | PolicyGuard, inputs: EvaluationInputs): string[] | undefined {
 	const tool = inputs.call.tool.toLowerCase();
-	return [
-		optionalSelectorMatches(rule.tools, (candidate) => candidate.toLowerCase() === tool),
-		optionalSelectorMatches(rule.commands, (pattern) => matchesAny(inputs.commands, [pattern])),
-		optionalSelectorMatches(rule.paths, (pattern) => matchesAnyPath(inputs.paths, [pattern])),
-		optionalSelectorMatches(rule.classifications, (candidate) => candidate === inputs.classification),
-		optionalSelectorMatches(rule.agents, (candidate) => candidate === inputs.call.agent),
-		optionalSelectorMatches(rule.operations, (candidate) => candidate === inputs.call.operation),
-	].every(Boolean);
+	const checks: Array<[string, boolean, boolean]> = [
+		[
+			'tools',
+			rule.tools !== undefined,
+			optionalSelectorMatches(rule.tools, (candidate) => candidate.toLowerCase() === tool),
+		],
+		[
+			'commands',
+			rule.commands !== undefined,
+			optionalSelectorMatches(rule.commands, (pattern) => matchesAny(inputs.commands, [pattern])),
+		],
+		[
+			'paths',
+			rule.paths !== undefined,
+			optionalSelectorMatches(rule.paths, (pattern) => matchesAnyPath(inputs.paths, [pattern])),
+		],
+		[
+			'classifications',
+			rule.classifications !== undefined,
+			optionalSelectorMatches(rule.classifications, (candidate) => candidate === inputs.classification),
+		],
+		[
+			'agents',
+			rule.agents !== undefined,
+			optionalSelectorMatches(rule.agents, (candidate) => candidate === inputs.call.agent),
+		],
+		[
+			'operations',
+			rule.operations !== undefined,
+			optionalSelectorMatches(rule.operations, (candidate) => candidate === inputs.call.operation),
+		],
+		[
+			'workspaces',
+			rule.workspaces !== undefined,
+			optionalSelectorMatches(rule.workspaces, (candidate) => candidate === inputs.call.workspaceId),
+		],
+	];
+	const configured = checks.filter(([, present]) => present);
+	const matches =
+		rule.selectorMode === 'any'
+			? configured.some(([, , matched]) => matched)
+			: configured.every(([, , matched]) => matched);
+	return matches ? configured.filter(([, , matched]) => matched).map(([kind]) => kind) : undefined;
 }
 
 function structuredMatches(
@@ -66,12 +103,12 @@ function structuredMatches(
 		.filter((rule) => {
 			const evaluatedAt = Date.parse(inputs.call.timestamp);
 			return (
-				matchesSelectors(rule, inputs) &&
+				matchedSelectorKinds(rule, inputs) !== undefined &&
 				(rule.expiresAt === undefined ||
 					(Number.isFinite(evaluatedAt) ? evaluatedAt : Date.now()) < Date.parse(rule.expiresAt))
 			);
 		})
-		.map((rule) => ({
+		.map((rule, index) => ({
 			id: rule.id,
 			decision: rule.decision,
 			reason: rule.reason,
@@ -79,7 +116,12 @@ function structuredMatches(
 			scope,
 			mode: rule.mode,
 			maxUses: rule.maxUses,
-		}));
+			matchedSelectors: matchedSelectorKinds(rule, inputs),
+			priority: rule.priority,
+			index,
+		}))
+		.sort((left, right) => (right.priority ?? 0) - (left.priority ?? 0) || left.index - right.index)
+		.map(({ index: _index, ...match }) => match);
 }
 
 function legacyMatches(

@@ -37,6 +37,8 @@ export interface StructuredRuleSelectors {
 	agents?: string[];
 	/** Match a trusted canonical host operation ID. */
 	operations?: string[];
+	/** Match the effective resolved workspace ID. */
+	workspaces?: string[];
 }
 
 export interface StructuredRule extends StructuredRuleSelectors {
@@ -46,6 +48,8 @@ export interface StructuredRule extends StructuredRuleSelectors {
 	mode?: 'enforce' | 'warn' | 'observe';
 	expiresAt?: string;
 	maxUses?: number;
+	selectorMode?: 'all' | 'any';
+	priority?: number;
 }
 
 export interface PolicyGuard extends StructuredRuleSelectors {
@@ -56,6 +60,8 @@ export interface PolicyGuard extends StructuredRuleSelectors {
 	mode?: 'enforce' | 'warn' | 'observe';
 	expiresAt?: string;
 	maxUses?: number;
+	selectorMode?: 'all' | 'any';
+	priority?: number;
 }
 
 export interface ManifestPolicyTest {
@@ -115,6 +121,7 @@ export interface EvaluationResult {
 	classification: CallClassification;
 	matchedRule?: string;
 	matchedRuleMode?: 'enforce' | 'warn';
+	matchedSelectors?: string[];
 	policyScope?: 'global' | 'workspace';
 	resolvedWorkspaceId?: string;
 	reason: string;
