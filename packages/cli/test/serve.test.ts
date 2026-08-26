@@ -1,8 +1,9 @@
 import { describe, expect, test, beforeAll, afterAll } from 'bun:test';
 import type { Server } from 'bun';
+import type { FSWatcher } from 'node:fs';
 import type { AuditLogStore } from '@umbod/core';
 import { startHttpServer } from '../src/server/serve.ts';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { makeManifest } from './helpers.ts';
@@ -11,6 +12,7 @@ let server: Server<undefined>;
 let tempDir: string;
 let auditLog: AuditLogStore;
 let baseUrl: string;
+let policyWatcher: FSWatcher | undefined;
 
 const manifest = makeManifest({
 	policy: { default_unknown: 'block', approval_method: 'web' },
@@ -24,21 +26,29 @@ const manifest = makeManifest({
 
 beforeAll(async () => {
 	tempDir = mkdtempSync(join(tmpdir(), 'umbod-http-test-'));
+	const manifestPath = join(tempDir, 'umbod.toml');
+	writeFileSync(
+		manifestPath,
+		`[env]\nname = "test"\nversion = "1.0.0"\ntimeout = 30\n\n[policy]\ndefault_unknown = "block"\napproval_method = "web"\n\n[rules]\n"git status" = "allow"\n"git log *" = "allow"\n"rm *" = "approve"\n"/^curl/" = "block"\n`
+	);
 
 	const handle = await startHttpServer({
 		host: '127.0.0.1',
 		port: 0, // Let OS pick a free port
 		manifest,
+		manifestPath,
 		dbPath: join(tempDir, 'test.db'),
 		approvalTimeoutMs: 500, // Short timeout for tests
 	});
 
 	server = handle.server;
 	auditLog = handle.umbod.auditLog;
+	policyWatcher = handle.policyWatcher;
 	baseUrl = `http://${server.hostname}:${server.port}`;
 });
 
 afterAll(() => {
+	policyWatcher?.close();
 	server?.stop(true);
 	auditLog?.close();
 	if (tempDir) rmSync(tempDir, { recursive: true, force: true });
@@ -86,6 +96,14 @@ describe('HTTP > GET', () => {
 		expect(body).toMatchObject({ generation: 1, reloadStatus: 'active' });
 		expect(body.sourceHash).toBe(body.activeHash);
 		expect(Date.parse(body.loadedAt)).not.toBeNaN();
+	});
+
+	test('GET /api/policy/source returns editable TOML with a concurrency hash', async () => {
+		const res = await fetch(`${baseUrl}/api/policy/source`);
+		expect(res.status).toBe(200);
+		const body = await res.json();
+		expect(body.source).toContain('[policy]');
+		expect(body.sourceHash).toHaveLength(64);
 	});
 
 	test('GET /api/activity returns array', async () => {
@@ -336,6 +354,53 @@ describe('HTTP > POST /api/policy/simulate', () => {
 		expect(res.status).toBe(400);
 		const body = await res.json();
 		expect(body.ok).toBe(false);
+	});
+});
+
+describe('HTTP > policy source activation', () => {
+	test('validates, atomically saves, and activates an unchanged candidate', async () => {
+		const loaded = await fetch(`${baseUrl}/api/policy/source`).then((response) => response.json());
+		const before = await fetch(`${baseUrl}/api/policy/status`).then((response) => response.json());
+		const res = await fetch(`${baseUrl}/api/policy/source`, {
+			method: 'POST',
+			headers: { 'content-type': 'application/json' },
+			body: JSON.stringify({ source: loaded.source, expectedSourceHash: loaded.sourceHash }),
+		});
+		expect(res.status).toBe(200);
+		const body = await res.json();
+		expect(body.ok).toBe(true);
+		expect(body.status.generation).toBe(before.generation + 1);
+	});
+
+	test('rejects stale editor state without overwriting the manifest', async () => {
+		const loaded = await fetch(`${baseUrl}/api/policy/source`).then((response) => response.json());
+		const res = await fetch(`${baseUrl}/api/policy/source`, {
+			method: 'POST',
+			headers: { 'content-type': 'application/json' },
+			body: JSON.stringify({ source: loaded.source, expectedSourceHash: '0'.repeat(64) }),
+		});
+		expect(res.status).toBe(409);
+		const after = await fetch(`${baseUrl}/api/policy/source`).then((response) => response.json());
+		expect(after.sourceHash).toBe(loaded.sourceHash);
+	});
+
+	test('rejects cross-origin activation and bootstrap changes', async () => {
+		const loaded = await fetch(`${baseUrl}/api/policy/source`).then((response) => response.json());
+		const crossOrigin = await fetch(`${baseUrl}/api/policy/source`, {
+			method: 'POST',
+			headers: { 'content-type': 'application/json', origin: 'https://example.com' },
+			body: JSON.stringify({ source: loaded.source, expectedSourceHash: loaded.sourceHash }),
+		});
+		expect(crossOrigin.status).toBe(403);
+		const changedEnvironment = loaded.source.replace('name = "test"', 'name = "other"');
+		const restartRequired = await fetch(`${baseUrl}/api/policy/source`, {
+			method: 'POST',
+			headers: { 'content-type': 'application/json' },
+			body: JSON.stringify({ source: changedEnvironment, expectedSourceHash: loaded.sourceHash }),
+		});
+		expect(restartRequired.status).toBe(400);
+		const after = await fetch(`${baseUrl}/api/policy/source`).then((response) => response.json());
+		expect(after.sourceHash).toBe(loaded.sourceHash);
 	});
 });
 

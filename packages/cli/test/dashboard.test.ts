@@ -28,11 +28,16 @@ interface DashboardStore {
 	simulationSource: string;
 	simulation: JsonRecord | null;
 	simulationError: string;
+	policySourceHash: string;
+	policyLoadedSource: string;
+	policySaveMessage: string;
 	refreshApprovals(): Promise<void>;
 	refreshActivity(): Promise<void>;
 	loadCoverage(): Promise<void>;
 	loadInsights(): Promise<void>;
 	runSimulation(): Promise<void>;
+	loadPolicySource(): Promise<void>;
+	savePolicySource(): Promise<void>;
 	receiveActivity(entry: JsonRecord): void;
 	resolveApproval(id: number, action: string): Promise<void>;
 }
@@ -42,6 +47,7 @@ function dashboardHarness(options: {
 	entries?: JsonRecord[];
 	approvals?: JsonRecord[];
 	manifest?: JsonRecord;
+	policySourceAvailable?: boolean;
 	fetch: FetchHandler;
 }): {
 	store: DashboardStore;
@@ -80,6 +86,7 @@ function dashboardHarness(options: {
 		entries: options.entries ?? [],
 		approvals: options.approvals ?? [],
 		manifest: options.manifest ?? {},
+		policySourceAvailable: options.policySourceAvailable ?? false,
 	});
 	const context = {
 		document: {
@@ -432,5 +439,35 @@ describe('dashboard activity updates', () => {
 		expect(harness.store.simulation?.dataset).toEqual({ evaluated: 4 });
 		expect(harness.store.simulationError).toBe('');
 		expect(harness.fetchCalls).toEqual(['/api/policy/simulate']);
+	});
+
+	test('loads, simulates, and activates the exact edited policy source', async () => {
+		const source = '[env]\nname = "test"';
+		const harness = dashboardHarness({
+			policySourceAvailable: true,
+			fetch: async (url, options) => {
+				if (url === '/api/policy/source' && options?.method !== 'POST')
+					return jsonResponse({ source, sourceHash: 'hash-1' });
+				if (url === '/api/policy/simulate')
+					return jsonResponse({
+						dataset: { evaluated: 4 },
+						safety: {},
+						candidateRules: [],
+						manifestTests: { passed: 0, failed: 0, results: [] },
+					});
+				return jsonResponse({
+					ok: true,
+					sourceHash: 'hash-2',
+					status: { generation: 2, reloadStatus: 'active' },
+				});
+			},
+		});
+		await settlePromises();
+		expect(harness.store.simulationSource).toBe(source);
+		harness.store.simulationSource += '\n# edit';
+		await harness.store.runSimulation();
+		await harness.store.savePolicySource();
+		expect(harness.store.policySourceHash).toBe('hash-2');
+		expect(harness.store.policySaveMessage).toContain('generation 2');
 	});
 });

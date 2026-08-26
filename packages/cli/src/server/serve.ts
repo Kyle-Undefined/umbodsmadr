@@ -1,8 +1,18 @@
 import type { Server, ServerWebSocket } from 'bun';
 import { watch, type FSWatcher } from 'node:fs';
+import { readFile, rename, stat, unlink, writeFile } from 'node:fs/promises';
+import { createHash, randomUUID } from 'node:crypto';
 import { basename, dirname } from 'node:path';
 
-import { createUmbod, logger, type Manifest, type PolicyManager, type Umbod } from '@umbod/core';
+import {
+	createUmbod,
+	logger,
+	parseManifestSource,
+	runManifestTests,
+	type Manifest,
+	type PolicyManager,
+	type Umbod,
+} from '@umbod/core';
 
 import { CliApprovalQueue } from './cli-approval.ts';
 import { renderDashboard } from './ui.ts';
@@ -35,7 +45,7 @@ function parseLimitParam(url: URL): number {
 	return Number.isSafeInteger(n) && n >= 0 ? n : DEFAULT_ACTIVITY_LIMIT;
 }
 
-function handleDashboard(umbod: Umbod, limit: number): Response {
+function handleDashboard(umbod: Umbod, limit: number, policySourceAvailable: boolean): Response {
 	const analytics = umbod.analyticsSnapshot();
 	const html = renderDashboard(
 		umbod.manifest,
@@ -43,17 +53,20 @@ function handleDashboard(umbod: Umbod, limit: number): Response {
 		umbod.listPendingApprovals(),
 		analytics.tools,
 		analytics.rules,
-		umbod.policyStatus
+		umbod.policyStatus,
+		policySourceAvailable
 	);
 	return new Response(html, {
 		headers: { 'content-type': 'text/html; charset=utf-8' },
 	});
 }
 
+// fallow-ignore-next-line complexity -- bounded UI, asset, and source route dispatch remains one explicit trust boundary.
 function handleServerFetch(
 	req: Request,
 	server: Server<undefined>,
-	umbod: Umbod
+	umbod: Umbod,
+	manifestPath?: string
 ): Response | Promise<Response> | undefined {
 	const url = new URL(req.url);
 	if (url.pathname === '/ws') {
@@ -66,9 +79,80 @@ function handleServerFetch(
 		});
 	}
 	if (req.method === 'GET' && url.pathname === '/') {
-		return handleDashboard(umbod, parseLimitParam(url));
+		return handleDashboard(umbod, parseLimitParam(url), manifestPath !== undefined);
+	}
+	if (url.pathname === '/api/policy/source') {
+		if (!manifestPath) return Response.json({ ok: false, error: 'manifest source is unavailable' }, { status: 404 });
+		if (req.method === 'GET') {
+			return readFile(manifestPath, 'utf8').then((source) =>
+				Response.json({ source, sourceHash: createHash('sha256').update(source).digest('hex') })
+			);
+		}
+		if (req.method === 'POST') return savePolicySource(req, umbod, manifestPath);
 	}
 	return umbod.fetch(req) ?? new Response('not found', { status: 404 });
+}
+
+// fallow-ignore-next-line complexity -- one transactional source-save boundary keeps validation, rollback, and responses together.
+async function savePolicySource(req: Request, umbod: Umbod, manifestPath: string): Promise<Response> {
+	let temporaryPath: string | undefined;
+	try {
+		const origin = req.headers.get('origin');
+		if (origin !== null && origin !== new URL(req.url).origin) {
+			return Response.json({ ok: false, error: 'cross-origin policy activation is not allowed' }, { status: 403 });
+		}
+		const body = (await req.json()) as Record<string, unknown>;
+		if (typeof body.source !== 'string' || !body.source.trim() || body.source.length > 1_000_000) {
+			throw new Error('source must be a non-empty TOML string no larger than 1 MB');
+		}
+		const current = await readFile(manifestPath, 'utf8');
+		const currentHash = createHash('sha256').update(current).digest('hex');
+		if (body.expectedSourceHash !== currentHash) {
+			return Response.json(
+				{ ok: false, error: 'manifest changed since it was loaded; reload before saving' },
+				{ status: 409 }
+			);
+		}
+		const candidate = parseManifestSource(body.source, manifestPath);
+		if (
+			candidate.env.name !== umbod.manifest.env.name ||
+			candidate.server.host !== umbod.manifest.server.host ||
+			candidate.server.port !== umbod.manifest.server.port
+		) {
+			throw new Error('manifest env.name and server host/port require a restart');
+		}
+		const tests = runManifestTests(candidate);
+		if (tests.failed > 0) {
+			return Response.json({ ok: false, error: 'embedded policy tests failed', tests }, { status: 400 });
+		}
+		temporaryPath = `${manifestPath}.${process.pid}.${randomUUID()}.tmp`;
+		const fileMode = (await stat(manifestPath)).mode;
+		await writeFile(temporaryPath, body.source, { encoding: 'utf8', flag: 'wx', mode: fileMode });
+		await rename(temporaryPath, manifestPath);
+		temporaryPath = undefined;
+		const status = await umbod.reloadPolicy(manifestPath);
+		if (status.reloadStatus !== 'active') {
+			temporaryPath = `${manifestPath}.${process.pid}.${randomUUID()}.rollback.tmp`;
+			await writeFile(temporaryPath, current, { encoding: 'utf8', flag: 'wx', mode: fileMode });
+			await rename(temporaryPath, manifestPath);
+			temporaryPath = undefined;
+			await umbod.reloadPolicy(manifestPath);
+			return Response.json(
+				{ ok: false, error: status.reloadError ?? 'policy activation failed', status },
+				{ status: 500 }
+			);
+		}
+		return Response.json({
+			ok: true,
+			tests,
+			status,
+			sourceHash: createHash('sha256').update(body.source).digest('hex'),
+		});
+	} catch (error: unknown) {
+		return Response.json({ ok: false, error: error instanceof Error ? error.message : String(error) }, { status: 400 });
+	} finally {
+		if (temporaryPath) await unlink(temporaryPath).catch(() => undefined);
+	}
 }
 
 export interface ServeHandle {
@@ -123,7 +207,7 @@ export async function startHttpServer(options: ServeOptions): Promise<ServeHandl
 		hostname: options.host,
 		port: options.port,
 		fetch(req, serverInstance) {
-			return handleServerFetch(req, serverInstance, umbod);
+			return handleServerFetch(req, serverInstance, umbod, options.manifestPath);
 		},
 		websocket: {
 			open(socket) {

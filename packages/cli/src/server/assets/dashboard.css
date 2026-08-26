@@ -1573,6 +1573,34 @@ body {
 	padding-top: 18px;
 	border-top: 1px solid var(--border);
 }
+.policy-studio .panel-header {
+	align-items: flex-start;
+}
+.policy-studio .panel-header p {
+	margin-top: 4px;
+	color: var(--text-muted);
+	font-size: 0.72rem;
+}
+.policy-studio-actions {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+	margin-bottom: 12px;
+}
+.policy-source-editor {
+	min-height: 360px;
+}
+.manifest-test-summary {
+	margin-bottom: 10px;
+	padding: 8px 10px;
+	border: 1px solid var(--success-border);
+	color: var(--success);
+	font: 0.7rem var(--mono);
+}
+.manifest-test-summary.simulation-risk {
+	border-color: var(--danger-border);
+	color: var(--danger);
+}
 .simulation-header {
 	display: flex;
 	justify-content: space-between;

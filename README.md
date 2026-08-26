@@ -179,7 +179,9 @@ umbod start --env ~/policies/work.toml
 
 Pending approvals, full audit log, structured and legacy rules, active policy generation/reload health, rule analytics, and per-call policy provenance. Outcomes are labeled in theme: _Sanctioned_, _Outlawed_, _Vouched_, _Forbidden_, _In Moot_. Real-time updates use WebSocket with a reconnect refresh of policy status.
 
-The Insights panel also includes a read-only policy simulator. Paste a complete candidate TOML manifest to replay up to 2,000 recent audit calls without activating the candidate or modifying the audit database. Use the CLI simulator for custom filters, unbounded replay, JSON output, and CI-style failure checks.
+The visible Policy Studio loads the active TOML source and supports an edit → validate/test → simulate → save-and-activate workflow. Simulation replays up to 2,000 recent audit calls without changing policy or audit data. Activation remains disabled until that exact editor content passes parsing, compilation, embedded tests, and simulation. Saving uses a source hash to reject stale editors, a same-directory atomic file replacement, rollback on activation failure, and the normal atomic policy reload. Bootstrap fields that require a process restart cannot be changed in Studio.
+
+Use the CLI simulator for custom filters, unbounded replay, JSON output, and CI-style failure checks.
 
 ## platform
 

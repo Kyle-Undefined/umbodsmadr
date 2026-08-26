@@ -17,6 +17,7 @@ import { AuditLogStore, type AuditLogStoreOptions } from '../db/audit-log.ts';
 import { toPermissionDecision } from '../hooks/adapter-utils.ts';
 import { PolicyManager, type PolicyStatus } from '../policy/policy-manager.ts';
 import { parseManifestSource } from '../config/manifest.ts';
+import { runManifestTests } from '../policy/manifest-tests.ts';
 import { resolveTimeParam } from '../utils/duration.ts';
 import { errorMessage } from '../utils/errors.ts';
 import { logger } from '../utils/logger.ts';
@@ -369,7 +370,10 @@ export function createUmbod(options: UmbodOptions): Umbod {
 				throw new Error('limit must be an integer between 1 and 100000');
 			}
 			const candidate = parseManifestSource(body.candidate, 'dashboard candidate');
-			return Response.json(simulatePolicy(policyManager.manifest, candidate, auditLog, { limit }));
+			return Response.json({
+				...simulatePolicy(policyManager.manifest, candidate, auditLog, { limit }),
+				manifestTests: runManifestTests(candidate),
+			});
 		} catch (error: unknown) {
 			return Response.json({ ok: false, error: errorMessage(error) }, { status: 400 });
 		}

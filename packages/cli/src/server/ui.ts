@@ -19,7 +19,8 @@ export function renderDashboard(
 	approvals: ApprovalRequest[],
 	toolUsage: ToolUsageStats,
 	ruleAnalysis: RuleAnalysis,
-	policyStatus: PolicyStatus
+	policyStatus: PolicyStatus,
+	policySourceAvailable: boolean
 ): string {
 	return `<!doctype html>
 <html lang="en">
@@ -74,6 +75,30 @@ export function renderDashboard(
         <div><span>Loaded</span><time x-text="$store.dash.formatRelative($store.dash.policyStatus.loadedAt)"></time></div>
         <div x-show="$store.dash.policyStatus.sourceHash !== $store.dash.policyStatus.activeHash"><span>Saved source</span><span x-text="$store.dash.shortHash($store.dash.policyStatus.sourceHash)"></span></div>
         <p x-show="$store.dash.policyStatus.reloadError" x-text="$store.dash.policyStatus.reloadError"></p>
+      </section>
+
+      <section class="panel policy-studio">
+        <div class="panel-header">
+          <div><h2><span class="section-icon" aria-hidden="true">&#9881;</span> Policy Studio</h2><p>Edit, test, replay, and atomically activate the policy manifest.</p></div>
+          <span class="panel-meta" x-text="$store.dash.policySourceDirty ? 'Unsaved changes' : 'Active source'"></span>
+        </div>
+        <div class="simulation-header">
+          <div class="policy-studio-actions">
+            <button type="button" class="button button-secondary" :disabled="$store.dash.policySourceLoading" @click="$store.dash.loadPolicySource()">Reload source</button>
+            <button type="button" class="button button-secondary" :disabled="$store.dash.simulationLoading || !$store.dash.simulationSource.trim()" @click="$store.dash.runSimulation()" x-text="$store.dash.simulationLoading ? 'Testing 2,000 calls…' : 'Validate & simulate'"></button>
+            <button type="button" class="button button-primary" :disabled="!$store.dash.canActivatePolicy || $store.dash.policySaveLoading" @click="$store.dash.savePolicySource()" x-text="$store.dash.policySaveLoading ? 'Activating…' : 'Save & activate'"></button>
+          </div>
+        </div>
+        <textarea class="simulation-source policy-source-editor" x-model="$store.dash.simulationSource" @input="$store.dash.invalidateSimulation()" spellcheck="false" aria-label="Policy manifest TOML"></textarea>
+        <p class="coverage-error" x-show="$store.dash.policySourceError" x-text="$store.dash.policySourceError"></p>
+        <p class="coverage-summary" x-show="$store.dash.policySaveMessage" x-text="$store.dash.policySaveMessage"></p>
+        <template x-if="$store.dash.simulation"><div class="simulation-results">
+          <div class="manifest-test-summary" :class="{ 'simulation-risk': $store.dash.simulation.manifestTests.failed > 0 }" x-text="$store.dash.simulation.manifestTests.passed + ' manifest tests passed · ' + $store.dash.simulation.manifestTests.failed + ' failed'"></div>
+          <div class="simulation-metrics"><div><strong x-text="$store.dash.simulation.dataset.evaluated"></strong><span>calls replayed</span></div><div><strong x-text="$store.dash.simulation.policyChanges"></strong><span>policy changes</span></div><div><strong x-text="$store.dash.simulation.newlyCovered"></strong><span>newly covered</span></div><div><strong x-text="$store.dash.simulation.stillUnmatched"></strong><span>unmatched</span></div></div>
+          <div class="simulation-safety"><span :class="{ 'simulation-risk': $store.dash.simulation.safety.blockedToAllow > 0 }" x-text="$store.dash.simulation.safety.blockedToAllow + ' block → allow'"></span><span :class="{ 'simulation-risk': $store.dash.simulation.safety.approveToAllow > 0 }" x-text="$store.dash.simulation.safety.approveToAllow + ' approve → allow'"></span><span :class="{ 'simulation-risk': $store.dash.simulation.safety.previouslyDeniedToAllow > 0 }" x-text="$store.dash.simulation.safety.previouslyDeniedToAllow + ' denied → allow'"></span><span :class="{ 'simulation-risk': $store.dash.simulation.safety.unresolvedWorkspace > 0 }" x-text="$store.dash.simulation.safety.unresolvedWorkspace + ' unresolved workspace'"></span></div>
+          <p class="coverage-summary" x-show="$store.dash.simulation.dataset.truncated">Dataset truncated at 2,000 calls; use the CLI for a full release-gating replay.</p>
+          <div class="simulation-rule-list"><template x-for="rule in $store.dash.simulation.candidateRules" :key="rule.scope + ':' + rule.id"><div><code x-text="rule.id"></code><span x-text="rule.kind + ' · ' + rule.scope"></span><span class="health-chip" :class="'health-chip--' + rule.status" x-text="rule.status"></span></div></template></div>
+        </div></template>
       </section>
 
       <section class="panel panel-approvals">
@@ -242,17 +267,6 @@ export function renderDashboard(
 	          <template x-if="$store.dash.coverage"><span class="coverage-summary" x-text="Math.round($store.dash.coverage.coverageRatio * 100) + '% covered · ' + $store.dash.coverage.totals.gaps + ' gaps'"></span></template>
 	          <template x-if="$store.dash.coverageError"><span class="coverage-error" x-text="$store.dash.coverageError"></span></template>
 	        </div>
-	        <div class="simulation-block">
-	          <div class="simulation-header"><div><h3 class="insight-heading">Policy Simulator</h3><p>Paste a complete candidate TOML manifest. The active policy and audit database remain unchanged.</p></div><button type="button" class="button button-secondary" :disabled="$store.dash.simulationLoading || !$store.dash.simulationSource.trim()" @click="$store.dash.runSimulation()" x-text="$store.dash.simulationLoading ? 'Simulating…' : 'Simulate candidate'"></button></div>
-	          <textarea class="simulation-source" x-model="$store.dash.simulationSource" spellcheck="false" placeholder="[env]&#10;name = &quot;candidate&quot;&#10;…"></textarea>
-	          <template x-if="$store.dash.simulationError"><p class="coverage-error" x-text="$store.dash.simulationError"></p></template>
-	          <template x-if="$store.dash.simulation"><div class="simulation-results">
-	            <div class="simulation-metrics"><div><strong x-text="$store.dash.simulation.dataset.evaluated"></strong><span>calls replayed</span></div><div><strong x-text="$store.dash.simulation.policyChanges"></strong><span>policy changes</span></div><div><strong x-text="$store.dash.simulation.newlyCovered"></strong><span>newly covered</span></div><div><strong x-text="$store.dash.simulation.stillUnmatched"></strong><span>unmatched</span></div></div>
-	            <div class="simulation-safety"><span :class="{ 'simulation-risk': $store.dash.simulation.safety.blockedToAllow > 0 }" x-text="$store.dash.simulation.safety.blockedToAllow + ' block → allow'"></span><span :class="{ 'simulation-risk': $store.dash.simulation.safety.approveToAllow > 0 }" x-text="$store.dash.simulation.safety.approveToAllow + ' approve → allow'"></span><span :class="{ 'simulation-risk': $store.dash.simulation.safety.previouslyDeniedToAllow > 0 }" x-text="$store.dash.simulation.safety.previouslyDeniedToAllow + ' denied → allow'"></span><span :class="{ 'simulation-risk': $store.dash.simulation.safety.unresolvedWorkspace > 0 }" x-text="$store.dash.simulation.safety.unresolvedWorkspace + ' unresolved workspace'"></span></div>
-	            <p class="coverage-summary" x-show="$store.dash.simulation.dataset.truncated">Dataset truncated; increase the replay limit in the CLI for release-gating.</p>
-	            <div class="simulation-rule-list"><template x-for="rule in $store.dash.simulation.candidateRules" :key="rule.scope + ':' + rule.id"><div><code x-text="rule.id"></code><span x-text="rule.kind + ' · ' + rule.scope"></span><span class="health-chip" :class="'health-chip--' + rule.status" x-text="rule.status"></span></div></template></div>
-	          </div></template>
-	        </div>
         </div>
       </section>
 
@@ -350,7 +364,7 @@ export function renderDashboard(
       </section>
     </main>
 
-    <script id="umbod-bootstrap" type="application/json">${serializeJson({ manifest, policyStatus, entries, approvals, insights: { tools: toolUsage, rules: ruleAnalysis } })}</script>
+    <script id="umbod-bootstrap" type="application/json">${serializeJson({ manifest, policyStatus, policySourceAvailable, entries, approvals, insights: { tools: toolUsage, rules: ruleAnalysis } })}</script>
   </body>
 </html>`;
 }

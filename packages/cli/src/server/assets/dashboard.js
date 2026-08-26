@@ -155,9 +155,29 @@
 			simulation: null,
 			simulationError: '',
 			simulationLoading: false,
+			policySourceHash: '',
+			policyLoadedSource: '',
+			policySourceLoading: false,
+			policySourceError: '',
+			policySaveLoading: false,
+			policySaveMessage: '',
+			simulatedSource: '',
 
 			get pendingCount() {
 				return this.approvals.length;
+			},
+
+			get policySourceDirty() {
+				return this.simulationSource !== this.policyLoadedSource;
+			},
+
+			get canActivatePolicy() {
+				return (
+					this.policySourceDirty &&
+					this.simulatedSource === this.simulationSource &&
+					this.simulation &&
+					this.simulation.manifestTests.failed === 0
+				);
 			},
 
 			get uniqueTools() {
@@ -316,9 +336,34 @@
 				}
 			},
 
+			loadPolicySource: async function () {
+				this.policySourceLoading = true;
+				this.policySourceError = '';
+				try {
+					var response = await fetch('/api/policy/source');
+					var result = await response.json();
+					if (!response.ok) throw new Error(result && result.error ? result.error : 'source fetch failed');
+					this.simulationSource = result.source;
+					this.policyLoadedSource = result.source;
+					this.policySourceHash = result.sourceHash;
+					this.simulation = null;
+					this.simulatedSource = '';
+				} catch (e) {
+					this.policySourceError = e instanceof Error ? e.message : String(e);
+				} finally {
+					this.policySourceLoading = false;
+				}
+			},
+
+			invalidateSimulation: function () {
+				this.simulatedSource = '';
+				this.policySaveMessage = '';
+			},
+
 			runSimulation: async function () {
 				this.simulationLoading = true;
-				this.simulationError = '';
+				this.policySourceError = '';
+				this.policySaveMessage = '';
 				try {
 					var response = await fetch('/api/policy/simulate', {
 						method: 'POST',
@@ -329,11 +374,37 @@
 					if (!response.ok)
 						throw new Error(result && result.error ? result.error : 'simulation failed: ' + response.status);
 					this.simulation = result;
+					this.simulatedSource = this.simulationSource;
 				} catch (e) {
 					this.simulation = null;
-					this.simulationError = e instanceof Error ? e.message : String(e);
+					this.simulatedSource = '';
+					this.policySourceError = e instanceof Error ? e.message : String(e);
 				} finally {
 					this.simulationLoading = false;
+				}
+			},
+
+			savePolicySource: async function () {
+				if (!this.canActivatePolicy) return;
+				this.policySaveLoading = true;
+				this.policySourceError = '';
+				try {
+					var response = await fetch('/api/policy/source', {
+						method: 'POST',
+						headers: { 'content-type': 'application/json' },
+						body: JSON.stringify({ source: this.simulationSource, expectedSourceHash: this.policySourceHash }),
+					});
+					var result = await response.json();
+					if (!response.ok) throw new Error(result && result.error ? result.error : 'policy activation failed');
+					this.policyLoadedSource = this.simulationSource;
+					this.policySourceHash = result.sourceHash;
+					this.policyStatus = result.status;
+					this.policySaveMessage = 'Policy saved and activated as generation ' + result.status.generation + '.';
+					await this.refreshPolicyStatus();
+				} catch (e) {
+					this.policySourceError = e instanceof Error ? e.message : String(e);
+				} finally {
+					this.policySaveLoading = false;
 				}
 			},
 
@@ -532,6 +603,7 @@
 	});
 
 	document.addEventListener('alpine:init', function () {
+		if (bootstrap.policySourceAvailable) Alpine.store('dash').loadPolicySource();
 		if (!('WebSocket' in window)) return;
 
 		var protocol = location.protocol === 'https:' ? 'wss' : 'ws';
