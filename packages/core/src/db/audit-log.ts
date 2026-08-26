@@ -349,6 +349,14 @@ export class AuditLogReader {
 		return rows.map(rowToAuditEntryWithApproval);
 	}
 
+	countFiltered(filter: AuditFilter = {}): number {
+		const { where, params } = this.buildFilter(filter);
+		const row = this.database.query(`SELECT COUNT(*) AS count FROM audit_log ${where}`).get(...params) as {
+			count: number;
+		};
+		return row.count;
+	}
+
 	getEntry(id: number): StoredAuditEntry | undefined {
 		const row = this.database
 			.query(

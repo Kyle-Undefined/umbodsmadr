@@ -298,6 +298,8 @@ export function createUmbod(options: UmbodOptions): Umbod {
 			env: manifest.env,
 			policy: manifest.policy,
 			rules: manifest.rules,
+			structuredRules: manifest.structuredRules ?? [],
+			guards: manifest.guards ?? [],
 			workspaces: manifest.workspaces ?? [],
 		});
 	}

@@ -35,6 +35,14 @@ export { errorMessage } from './utils/errors.ts';
 export { logger } from './utils/logger.ts';
 export { computeToolUsage } from './analytics/tool-usage.ts';
 export { analyzeRules } from './analytics/rule-analysis.ts';
+export { simulatePolicy } from './analytics/policy-simulation.ts';
+export type {
+	DecisionTransition,
+	PolicySimulation,
+	PolicySimulationExample,
+	PolicySimulationOptions,
+	SimulatedRuleFinding,
+} from './analytics/policy-simulation.ts';
 export { suggestRules } from './analytics/suggestions.ts';
 export { computeAnalyticsSnapshot } from './analytics/snapshot.ts';
 export { createAnalyticsReader } from './analytics/reader.ts';

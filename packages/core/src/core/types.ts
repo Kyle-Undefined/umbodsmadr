@@ -22,6 +22,32 @@ export interface ServerConfig {
 	port: number;
 }
 
+export interface StructuredRuleSelectors {
+	/** Match any listed tool name. */
+	tools?: string[];
+	/** Match any listed command pattern using Umbod's existing glob/regex syntax. */
+	commands?: string[];
+	/** Match any listed operation target path using Umbod's existing glob/regex syntax. */
+	paths?: string[];
+	/** Match any listed classifier result. */
+	classifications?: CallClassification[];
+	/** Match any listed agent name. */
+	agents?: string[];
+}
+
+export interface StructuredRule extends StructuredRuleSelectors {
+	id: string;
+	decision: ApprovalDecision;
+	reason?: string;
+}
+
+export interface PolicyGuard extends StructuredRuleSelectors {
+	id: string;
+	/** Guards are invariants and may only block. */
+	decision: 'block';
+	reason?: string;
+}
+
 export interface WorkspaceConfig {
 	/** Opaque host-neutral policy scope identifier. */
 	id: string;
@@ -30,12 +56,20 @@ export interface WorkspaceConfig {
 	/** Workspace-specific fallback; inherits policy.default_unknown when omitted. */
 	default_unknown?: ApprovalDecision;
 	rules: Record<string, ApprovalDecision>;
+	/** Ordered structured rules evaluated before this workspace's legacy rule table. */
+	structuredRules?: StructuredRule[];
+	/** Block-only workspace invariants evaluated after global guards. */
+	guards?: PolicyGuard[];
 }
 
 export interface Manifest {
 	env: EnvConfig;
 	policy: PolicyConfig;
 	rules: Record<string, ApprovalDecision>;
+	/** Ordered structured rules evaluated before the legacy global rule table. */
+	structuredRules?: StructuredRule[];
+	/** Block-only global invariants that workspace policy cannot relax. */
+	guards?: PolicyGuard[];
 	/** Optional for compatibility with manifests created before workspace policy was introduced. */
 	workspaces?: WorkspaceConfig[];
 	server: ServerConfig;

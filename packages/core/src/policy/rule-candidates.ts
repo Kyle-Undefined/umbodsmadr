@@ -17,6 +17,7 @@ const PATH_FIELD_NAMES = new Set([
 	'shell_command',
 ]);
 
+// fallow-ignore-next-line complexity -- bounded recursive traversal handles the supported JSON value shapes.
 function collectInputStrings(value: unknown, out: Set<string>, depth: number): void {
 	if (depth > MAX_DEPTH) return;
 
@@ -42,6 +43,16 @@ function collectInputStrings(value: unknown, out: Set<string>, depth: number): v
 			}
 		}
 	}
+}
+
+export function rulePathCandidates(call: ToolCall): string[] {
+	const paths = new Set<string>();
+	const rawInputs = call.inputs as Record<string, unknown>;
+	const toolInput = rawInputs?.tool_input ?? rawInputs?.toolInput ?? rawInputs?.input ?? call.inputs;
+	collectInputStrings(toolInput, paths, 0);
+
+	if (looksLikeFilePath(call.command)) paths.add(call.command.trim());
+	return [...paths].filter(looksLikeFilePath).map((path) => path.replaceAll('\\', '/'));
 }
 
 export function looksLikeFilePath(s: string): boolean {

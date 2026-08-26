@@ -1,5 +1,14 @@
 import { DEFAULT_HOST, DEFAULT_PORT } from '../core/types.ts';
-import type { ApprovalDecision, Manifest, PolicyConfig, ServerConfig, WorkspaceConfig } from '../core/types.ts';
+import type {
+	ApprovalDecision,
+	CallClassification,
+	Manifest,
+	PolicyConfig,
+	PolicyGuard,
+	ServerConfig,
+	StructuredRule,
+	WorkspaceConfig,
+} from '../core/types.ts';
 import { isAbsoluteWorkspaceRoot, normalizeWorkspaceRoot } from '../policy/workspace.ts';
 import { isRecord } from '../utils/guards.ts';
 import { errorMessage } from '../utils/errors.ts';
@@ -99,6 +108,77 @@ function normalizeRules(raw: Record<string, unknown> | undefined): Manifest['rul
 	return normalized;
 }
 
+const CLASSIFICATIONS = new Set<CallClassification>(['readonly', 'destructive', 'external', 'stateful', 'unknown']);
+const REGEX_PATTERN_RE = /^\/(.+)\/([gimsuy]*)$/;
+
+function normalizeStringList(value: unknown, field: string): string[] | undefined {
+	if (value === undefined) return undefined;
+	if (!Array.isArray(value) || value.length === 0 || value.some((item) => typeof item !== 'string' || !item.trim())) {
+		throw new Error(`manifest ${field} must be a non-empty string array`);
+	}
+	return value.map((item) => (item as string).trim());
+}
+
+function validateMatcherPatterns(patterns: string[] | undefined, field: string): void {
+	for (const pattern of patterns ?? []) {
+		const match = REGEX_PATTERN_RE.exec(pattern);
+		if (!match) continue;
+		try {
+			new RegExp(match[1], match[2]);
+		} catch (error) {
+			throw new Error(`manifest ${field} contains an invalid regex: ${errorMessage(error)}`);
+		}
+	}
+}
+
+function normalizeStructuredEntries(raw: unknown, scope: string, guard: false): StructuredRule[];
+function normalizeStructuredEntries(raw: unknown, scope: string, guard: true): PolicyGuard[];
+function normalizeStructuredEntries(raw: unknown, scope: string, guard: boolean): Array<StructuredRule | PolicyGuard> {
+	if (raw === undefined) return [];
+	if (!Array.isArray(raw)) throw new Error(`manifest ${scope} must be an array of tables`);
+	const ids = new Set<string>();
+	// fallow-ignore-next-line complexity -- one schema boundary validates every selector field together.
+	return raw.map((value, index) => {
+		if (!isRecord(value)) throw new Error(`manifest ${scope}[${index}] must be a table`);
+		const id = typeof value.id === 'string' ? value.id.trim() : '';
+		if (!id) throw new Error(`manifest ${scope}[${index}].id must be a non-empty string`);
+		if (ids.has(id)) throw new Error(`manifest ${scope} id "${id}" is duplicated`);
+		ids.add(id);
+
+		const decision = value.decision;
+		if (guard ? decision !== undefined && decision !== 'block' : !isDecision(decision)) {
+			throw new Error(
+				guard
+					? `manifest ${scope} "${id}" decision must be block when provided`
+					: `manifest ${scope} "${id}" decision must be allow, block, or approve`
+			);
+		}
+
+		const classifications = normalizeStringList(value.classifications, `${scope} "${id}".classifications`);
+		if (classifications?.some((item) => !CLASSIFICATIONS.has(item as CallClassification))) {
+			throw new Error(`manifest ${scope} "${id}".classifications contains an unknown classification`);
+		}
+		const commands = normalizeStringList(value.commands, `${scope} "${id}".commands`);
+		const paths = normalizeStringList(value.paths, `${scope} "${id}".paths`);
+		validateMatcherPatterns(commands, `${scope} "${id}".commands`);
+		validateMatcherPatterns(paths, `${scope} "${id}".paths`);
+		const entry = {
+			id,
+			decision: guard ? ('block' as const) : (decision as ApprovalDecision),
+			tools: normalizeStringList(value.tools, `${scope} "${id}".tools`),
+			commands,
+			paths,
+			classifications: classifications as CallClassification[] | undefined,
+			agents: normalizeStringList(value.agents, `${scope} "${id}".agents`),
+			reason: typeof value.reason === 'string' && value.reason.trim() ? value.reason.trim() : undefined,
+		};
+		if (!entry.tools && !entry.commands && !entry.paths && !entry.classifications && !entry.agents) {
+			throw new Error(`manifest ${scope} "${id}" must define at least one selector`);
+		}
+		return entry;
+	});
+}
+
 function normalizeWorkspaceRoots(raw: unknown, id: string, seen: Set<string>): string[] {
 	if (raw === undefined) return [];
 	if (!Array.isArray(raw) || raw.some((root) => typeof root !== 'string')) {
@@ -115,6 +195,7 @@ function normalizeWorkspaceRoots(raw: unknown, id: string, seen: Set<string>): s
 	});
 }
 
+// fallow-ignore-next-line complexity -- workspace validation intentionally remains an atomic schema boundary.
 function normalizeWorkspaceEntry(entry: unknown, index: number, ids: Set<string>, roots: Set<string>): WorkspaceConfig {
 	if (!isRecord(entry)) throw new Error(`manifest workspaces[${index}] must be a table`);
 	const id = typeof entry.id === 'string' ? entry.id.trim() : '';
@@ -129,11 +210,22 @@ function normalizeWorkspaceEntry(entry: unknown, index: number, ids: Set<string>
 	if (entry.rules !== undefined && !isRecord(entry.rules)) {
 		throw new Error(`manifest workspace "${id}".rules must be a table`);
 	}
+	const legacyRules = normalizeRules(isRecord(entry.rules) ? entry.rules : undefined);
+	const structuredRules = normalizeStructuredEntries(entry.rule, `workspace "${id}".rule`, false);
+	const guards = normalizeStructuredEntries(entry.guard, `workspace "${id}".guard`, true);
+	const identities = [...structuredRules, ...guards].map((item) => item.id);
+	if (new Set(identities).size !== identities.length || identities.some((identity) => identity in legacyRules)) {
+		throw new Error(
+			`manifest workspace "${id}" structured rule and guard ids must be unique and must not collide with legacy patterns`
+		);
+	}
 	return {
 		id,
 		roots: normalizeWorkspaceRoots(entry.roots, id, roots),
 		default_unknown: defaultUnknown,
-		rules: normalizeRules(entry.rules),
+		rules: legacyRules,
+		...(structuredRules.length > 0 ? { structuredRules } : {}),
+		...(guards.length > 0 ? { guards } : {}),
 	};
 }
 
@@ -166,6 +258,8 @@ export async function loadManifest(manifestPath: string): Promise<Manifest> {
 	const policy = isRecord(parsed.policy) ? parsed.policy : undefined;
 	const rules = isRecord(parsed.rules) ? parsed.rules : undefined;
 	const workspaces = parsed.workspaces;
+	const structuredRules = parsed.rule;
+	const guards = parsed.guard;
 	const server = isRecord(parsed.server) ? parsed.server : undefined;
 
 	if (!env?.name || !env?.version) {
@@ -177,6 +271,17 @@ export async function loadManifest(manifestPath: string): Promise<Manifest> {
 		throw new Error('manifest env.timeout is required and must be a non-negative number (seconds); use 0 to disable');
 	}
 
+	const normalizedStructuredRules = normalizeStructuredEntries(structuredRules, 'rule', false);
+	const normalizedGuards = normalizeStructuredEntries(guards, 'guard', true);
+	const identities = [...normalizedStructuredRules, ...normalizedGuards].map((item) => item.id);
+	if (
+		new Set(identities).size !== identities.length ||
+		identities.some((identity) => identity in normalizeRules(rules))
+	) {
+		throw new Error(
+			'manifest global structured rule and guard ids must be unique and must not collide with legacy patterns'
+		);
+	}
 	return {
 		env: {
 			name: String(env.name),
@@ -185,6 +290,8 @@ export async function loadManifest(manifestPath: string): Promise<Manifest> {
 		},
 		policy: normalizePolicy(policy),
 		rules: normalizeRules(rules),
+		...(normalizedStructuredRules.length > 0 ? { structuredRules: normalizedStructuredRules } : {}),
+		...(normalizedGuards.length > 0 ? { guards: normalizedGuards } : {}),
 		workspaces: normalizeWorkspaces(workspaces),
 		server: normalizeServer(server),
 	};

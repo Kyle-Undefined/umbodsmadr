@@ -1,61 +1,74 @@
 import type { ApprovalDecision, EvaluationResult, Manifest, ToolCall } from '../core/types.ts';
 import { classifyToolCall } from './classifier.ts';
+import { compilePolicy, type CompiledPolicy, type CompiledPolicyMatch } from './compiled-policy.ts';
 import { findMatchingRule } from './rule-matcher.ts';
-import { ruleMatchCandidates } from './rule-candidates.ts';
 import { resolveWorkspace, type WorkspaceResolution } from './workspace.ts';
+type Classification = EvaluationResult['classification'];
 
-function findFirstMatchingRule(
-	candidates: string[],
-	rules: Manifest['rules']
-): [pattern: string, decision: ApprovalDecision] | undefined {
-	for (const input of candidates) {
-		const match = findMatchingRule(input, rules);
-		if (match) return match;
-	}
-
-	return undefined;
+export interface PolicyTraceMatch extends CompiledPolicyMatch {
+	selected: boolean;
 }
 
-type RuleMatch = [pattern: string, decision: ApprovalDecision];
-type Classification = EvaluationResult['classification'];
+export interface PolicyEvaluationTrace {
+	result: EvaluationResult;
+	matches: PolicyTraceMatch[];
+}
 
 interface PolicyContext {
 	resolution: WorkspaceResolution;
-	match?: RuleMatch;
+	match?: CompiledPolicyMatch;
 	policyScope: 'global' | 'workspace';
 	effectiveDefault: ApprovalDecision;
 }
 
-function resolvePolicyContext(manifest: Manifest, call: ToolCall): PolicyContext {
-	const candidates = ruleMatchCandidates(call);
+function resolvePolicyContext(
+	manifest: Manifest,
+	compiled: CompiledPolicy,
+	call: ToolCall,
+	classification: Classification
+): PolicyContext {
 	const resolution = resolveWorkspace(manifest, call);
-	const workspaceMatch = resolution.workspace
-		? findFirstMatchingRule(candidates, resolution.workspace.rules)
-		: undefined;
-	const globalMatch = workspaceMatch ? undefined : findFirstMatchingRule(candidates, manifest.rules);
+	const globalGuard = compiled.matchGlobalGuard(call, classification);
+	if (globalGuard) return policyContext(resolution, globalGuard, 'global', manifest);
+	const workspaceGuard = compiled.matchWorkspaceGuard(resolution.workspace, call, classification);
+	if (workspaceGuard) return policyContext(resolution, workspaceGuard, 'workspace', manifest);
+	const workspaceMatch = compiled.matchWorkspaceRule(resolution.workspace, call, classification);
+	if (workspaceMatch) return policyContext(resolution, workspaceMatch, 'workspace', manifest);
+	return policyContext(resolution, compiled.matchGlobalRule(call, classification), 'global', manifest);
+}
+
+function policyContext(
+	resolution: WorkspaceResolution,
+	match: CompiledPolicyMatch | undefined,
+	policyScope: 'global' | 'workspace',
+	manifest: Manifest
+): PolicyContext {
 	return {
 		resolution,
-		match: workspaceMatch ?? globalMatch,
-		policyScope: workspaceMatch ? 'workspace' : 'global',
+		match,
+		policyScope,
 		effectiveDefault: resolution.workspace?.default_unknown ?? manifest.policy.default_unknown,
 	};
 }
 
 function matchedRuleResult(context: PolicyContext, classification: Classification): EvaluationResult {
-	const [pattern, decision] = context.match as RuleMatch;
+	const match = context.match as CompiledPolicyMatch;
+	const pattern = match.id;
 	const workspaceId = context.resolution.workspace?.id;
-	const workspaceReason = `matched rule "${pattern}" in workspace "${workspaceId}"`;
+	const label = match.kind === 'guard' ? 'guard' : 'rule';
+	const workspaceReason = `matched ${label} "${pattern}" in workspace "${workspaceId}"`;
 	const globalSuffix = workspaceId ? ` for workspace "${workspaceId}"` : '';
 	return {
-		decision,
+		decision: match.decision,
 		classification,
 		matchedRule: pattern,
 		policyScope: context.policyScope,
 		resolvedWorkspaceId: workspaceId,
 		reason:
-			context.policyScope === 'workspace'
+			match.reason ??
+			(context.policyScope === 'workspace'
 				? workspaceReason
-				: `matched rule "${pattern}" in global policy${globalSuffix}`,
+				: `matched ${label} "${pattern}" in global policy${globalSuffix}`),
 	};
 }
 
@@ -87,8 +100,20 @@ function unresolvedWorkspaceResult(context: PolicyContext, classification: Class
 	};
 }
 
-function hiddenProbeMatch(call: ToolCall, manifest: Manifest, context: PolicyContext): RuleMatch | undefined {
+function hiddenProbeMatch(
+	call: ToolCall,
+	manifest: Manifest,
+	compiled: CompiledPolicy,
+	context: PolicyContext,
+	classification: Classification
+): [string, ApprovalDecision] | undefined {
+	if (compiled.hasPathGuard(context.resolution.workspace)) return ['structured path guard', 'block'];
 	const probe = `${call.command}/.hidden_probe`;
+	const probeCall = { ...call, command: probe, inputs: { tool_input: { path: probe } } };
+	const guard =
+		compiled.matchGlobalGuard(probeCall, classification) ??
+		compiled.matchWorkspaceGuard(context.resolution.workspace, probeCall, classification);
+	if (guard) return [guard.id, guard.decision];
 	return (
 		(context.resolution.workspace ? findMatchingRule(probe, context.resolution.workspace.rules) : undefined) ??
 		findMatchingRule(probe, manifest.rules)
@@ -98,6 +123,7 @@ function hiddenProbeMatch(call: ToolCall, manifest: Manifest, context: PolicyCon
 function readonlyResult(
 	call: ToolCall,
 	manifest: Manifest,
+	compiled: CompiledPolicy,
 	context: PolicyContext,
 	classification: Classification
 ): EvaluationResult {
@@ -108,7 +134,7 @@ function readonlyResult(
 				reason: 'readonly tool call with empty command',
 			};
 		}
-		const probeMatch = hiddenProbeMatch(call, manifest, context);
+		const probeMatch = hiddenProbeMatch(call, manifest, compiled, context, classification);
 		if (probeMatch && probeMatch[1] !== 'allow') {
 			return {
 				...fallbackResult(context, classification),
@@ -127,16 +153,39 @@ function readonlyResult(
 }
 
 export class PolicyEngine {
-	constructor(private readonly manifest: Manifest) {}
+	private readonly compiled: CompiledPolicy;
+
+	constructor(private readonly manifest: Manifest) {
+		this.compiled = compilePolicy(manifest);
+	}
 
 	evaluate(call: ToolCall): EvaluationResult {
+		return this.evaluateWithTrace(call).result;
+	}
+
+	evaluateWithTrace(call: ToolCall): PolicyEvaluationTrace {
 		const classification = classifyToolCall(call);
-		const context = resolvePolicyContext(this.manifest, call);
+		const context = resolvePolicyContext(this.manifest, this.compiled, call, classification);
+		const tracedMatches =
+			context.resolution.source === 'unresolved'
+				? []
+				: this.compiled.traceMatches(context.resolution.workspace, call, classification);
+		let result: EvaluationResult;
 		if (context.resolution.source === 'unresolved') {
-			return unresolvedWorkspaceResult(context, classification);
+			result = unresolvedWorkspaceResult(context, classification);
+		} else if (context.match) {
+			result = matchedRuleResult(context, classification);
+		} else if (classification === 'readonly') {
+			result = readonlyResult(call, this.manifest, this.compiled, context, classification);
+		} else {
+			result = fallbackResult(context, classification);
 		}
-		if (context.match) return matchedRuleResult(context, classification);
-		if (classification === 'readonly') return readonlyResult(call, this.manifest, context, classification);
-		return fallbackResult(context, classification);
+		return {
+			result,
+			matches: tracedMatches.map((match) => ({
+				...match,
+				selected: result.matchedRule === match.id && result.policyScope === match.scope,
+			})),
+		};
 	}
 }

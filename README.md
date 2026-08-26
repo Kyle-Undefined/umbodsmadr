@@ -37,6 +37,18 @@ approval_method = "web"  # or "cli" or "both"
 # Hidden file blocking, matches on Bash and Tool calls
 '/(^|\/)\.[^\s\/]+/' = "block"
 
+[[guard]]
+id = "credentials"
+paths = ["**/.env", "**/id_ed25519", "**/*.pem"]
+
+[[rule]]
+id = "repository-reads"
+decision = "allow"
+tools = ["read", "grep", "glob"]
+paths = ["/work/client-app/**"]
+classifications = ["readonly"]
+reason = "normal repository read"
+
 [[workspaces]]
 id = "client-production"
 roots = ["/work/client-app", "C:\\work\\client-app"]
@@ -45,11 +57,38 @@ default_unknown = "block"
 [workspaces.rules]
 "git push *" = "block"
 "terraform plan *" = "approve"
+
+[[workspaces.guard]]
+id = "no-force-push"
+commands = ["git push --force *"]
+
+[[workspaces.rule]]
+id = "normal-edits"
+decision = "allow"
+tools = ["edit", "write", "apply_patch"]
+paths = ["/work/client-app/**"]
 ```
 
-Rules are either wildcard patterns (`rm *`, `* --force`) or regex (`/^pattern$/flags`). First match wins. Anything unmatched falls back to `default_unknown`. Changing the manifest requires a restart.
+Legacy `[rules]` entries remain supported as wildcard patterns (`rm *`, `* --force`) or regex (`/^pattern$/flags`). Structured `[[rule]]` entries have stable IDs and may select `tools`, `commands`, `paths`, `classifications`, and `agents`. Selector kinds are ANDed; values within one selector are ORed. Structured rules run in manifest order before the legacy table in the same scope.
+
+`[[guard]]` and `[[workspaces.guard]]` entries are block-only invariants. Global guards run first and cannot be relaxed by workspace policy; workspace guards run next, followed by workspace rules, global rules, readonly handling, and `default_unknown`. Guards may omit `decision`; when present it must be `"block"`. A directory-wide `grep` or `glob` falls back instead of being auto-allowed whenever an applicable structured path guard exists, because the search may expose a protected target. Changing the manifest still requires a restart.
 
 The audit database lives next to the manifest as `umbod.envName.db`.
+
+### policy simulation
+
+Replay historical audit calls through both the current and a candidate manifest without activating the candidate or writing to the audit database:
+
+```bash
+umbod policy simulate ./candidate.toml \
+  --env ./umbod.toml \
+  --since 30d \
+  --limit 2000 \
+  --fail-on blocked-to-allow \
+  --fail-on unresolved-workspace
+```
+
+Use `--all` for an explicitly unbounded replay, `--database` to select a different audit database, and `--json` for the complete report. Available failure checks are `blocked-to-allow`, `approve-to-allow`, `previously-denied-to-allow`, `unresolved-workspace`, and `truncated`. Stored historical outcomes, freshly replayed baseline decisions, and candidate decisions remain separate in the report.
 
 ## workspaces
 

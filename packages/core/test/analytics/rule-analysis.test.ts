@@ -61,6 +61,40 @@ afterEach(() => {
 });
 
 describe('analytics > rule analysis', () => {
+	test('reports structured rules and guards by their stable matched identity', () => {
+		const manifest = makeManifest({
+			structuredRules: [{ id: 'status', decision: 'allow', commands: ['git status'] }],
+			guards: [{ id: 'credentials', decision: 'block', paths: ['**/.env'] }],
+		});
+		record(manifest, { command: 'git status' });
+		record(manifest, { tool: 'Read', command: '/work/.env', inputs: { file_path: '/work/.env' } });
+
+		const analysis = analyzeRules(manifest, store, { projection: 'summary' });
+		expect(analysis.rules.find((rule) => rule.pattern === 'status')).toMatchObject({
+			decision: 'allow',
+			status: 'active',
+			matchCountAllTime: 1,
+		});
+		expect(analysis.rules.find((rule) => rule.pattern === 'credentials')).toMatchObject({
+			decision: 'block',
+			status: 'active',
+			matchCountAllTime: 1,
+		});
+	});
+
+	test('uses the shared policy trace to detect structured rules shadowing legacy rules', () => {
+		const manifest = makeManifest({
+			structuredRules: [{ id: 'status', decision: 'allow', commands: ['git status'] }],
+			rules: { 'git *': 'block' },
+		});
+		record(manifest, { command: 'git status' });
+
+		const analysis = analyzeRules(manifest, store);
+		expect(analysis.rules.find((rule) => rule.pattern === 'git *')).toMatchObject({
+			status: 'shadowed',
+			shadowedBy: 'status',
+		});
+	});
 	test('marks matched rules active and never-matched rules dead', () => {
 		const manifest = makeManifest({ rules: { 'git *': 'allow', 'docker *': 'approve' } });
 		record(manifest, { command: 'git status' });

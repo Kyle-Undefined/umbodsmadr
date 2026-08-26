@@ -42,10 +42,15 @@ function supportedAdapterTools(): Set<string> {
 }
 
 function configuredRulePatterns(manifest: Manifest, workspaceId: string | undefined): string[] {
-	const workspaceRules = workspaceId
-		? (manifest.workspaces?.find((workspace) => workspace.id === workspaceId)?.rules ?? {})
-		: {};
-	return [...Object.keys(manifest.rules), ...Object.keys(workspaceRules)];
+	const workspace = workspaceId ? manifest.workspaces?.find((entry) => entry.id === workspaceId) : undefined;
+	const globalStructured = [...(manifest.structuredRules ?? []), ...(manifest.guards ?? [])];
+	const workspaceStructured = workspace ? [...(workspace.structuredRules ?? []), ...(workspace.guards ?? [])] : [];
+	const structuredTools = [...globalStructured, ...workspaceStructured].flatMap((rule) => rule.tools ?? []);
+	return [
+		...Object.keys(manifest.rules),
+		...Object.keys(workspace?.rules ?? {}),
+		...structuredTools.map((tool) => `${tool} *`),
+	];
 }
 
 function referencedRules(patterns: string[], knownTools: Set<string>): Map<string, string[]> {

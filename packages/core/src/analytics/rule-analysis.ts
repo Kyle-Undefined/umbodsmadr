@@ -1,7 +1,7 @@
 import type { AuditEntry, Manifest, WorkspaceConfig } from '../core/types.ts';
 import type { AuditLogReader } from '../db/audit-log.ts';
+import { PolicyEngine } from '../policy/engine.ts';
 import { matchesPattern } from '../policy/rule-matcher.ts';
-import { ruleMatchCandidates } from '../policy/rule-candidates.ts';
 import { renderTomlSnippet } from './toml.ts';
 import { suggestRules } from './suggestions.ts';
 import type { AuditFilter, RuleAnalysis, RuleFinding, RuleSuggestion } from './types.ts';
@@ -33,35 +33,6 @@ function isWildcardFree(pattern: string): boolean {
 	return !REGEX_PATTERN_RE.test(pattern) && !pattern.includes('*');
 }
 
-/**
- * Replays a historical tool call against the full rule list exactly like the
- * engine does, returning every pattern that would match plus the winner.
- */
-function replayEntry(entry: AuditEntry, rules: Manifest['rules']): { winner?: string; matching: string[] } {
-	const candidates = ruleMatchCandidates(entry);
-	const matching: string[] = [];
-	let winner: string | undefined;
-
-	for (const [pattern] of Object.entries(rules)) {
-		const matches = candidates.some((candidate) => matchesPattern(candidate, pattern));
-		if (!matches) continue;
-		matching.push(pattern);
-	}
-
-	// First match in insertion order over the first candidate that hits it —
-	// mirror findFirstMatchingRule: iterate candidates outer, rules inner.
-	outer: for (const candidate of candidates) {
-		for (const [pattern] of Object.entries(rules)) {
-			if (matchesPattern(candidate, pattern)) {
-				winner = pattern;
-				break outer;
-			}
-		}
-	}
-
-	return { winner, matching };
-}
-
 type MatchedRuleRow = ReturnType<AuditLogReader['matchedRuleCounts']>[number];
 
 function resolveAnalysisWorkspace(manifest: Manifest, workspaceId: string | undefined): WorkspaceConfig | undefined {
@@ -91,13 +62,23 @@ function matchedRuleCountMap(rows: MatchedRuleRow[], workspaceId: string | undef
 	return counts;
 }
 
-function empiricalShadows(entries: AuditEntry[], rules: Manifest['rules']): Map<string, string> {
+function empiricalShadows(
+	entries: AuditEntry[],
+	manifest: Manifest,
+	scope: 'global' | 'workspace',
+	workspaceId?: string
+): Map<string, string> {
 	const shadowedBy = new Map<string, string>();
+	const engine = new PolicyEngine(manifest);
 	for (const entry of entries) {
-		const { winner, matching } = replayEntry(entry, rules);
-		if (winner === undefined) continue;
-		for (const pattern of matching) {
-			if (pattern !== winner && !shadowedBy.has(pattern)) shadowedBy.set(pattern, winner);
+		const trace = engine.evaluateWithTrace(entry);
+		const matching = trace.matches.filter(
+			(match) => match.scope === scope && (scope === 'global' || trace.result.resolvedWorkspaceId === workspaceId)
+		);
+		const winner = trace.matches.find((match) => match.selected);
+		if (!winner) continue;
+		for (const match of matching) {
+			if (!match.selected && !shadowedBy.has(match.id)) shadowedBy.set(match.id, winner.id);
 		}
 	}
 	return shadowedBy;
@@ -165,6 +146,33 @@ function ruleFinding(
 	};
 }
 
+function structuredFinding(
+	rule: NonNullable<Manifest['structuredRules']>[number] | NonNullable<Manifest['guards']>[number],
+	workspaceId: string | undefined,
+	allTimeCounts: Map<string, MatchedRuleRow>,
+	windowCounts: Map<string, MatchedRuleRow>,
+	kind: 'structured rule' | 'guard',
+	shadowedBy: Map<string, string>
+): RuleFinding {
+	const allTime = allTimeCounts.get(rule.id);
+	const inWindow = windowCounts.get(rule.id);
+	const matchCount = matchedCount(inWindow);
+	const matchCountAllTime = matchedCount(allTime);
+	const status =
+		matchCountAllTime === 0 ? (shadowedBy.has(rule.id) ? 'shadowed' : 'dead') : matchCount === 0 ? 'stale' : 'active';
+	return {
+		pattern: rule.id,
+		decision: rule.decision,
+		workspaceId,
+		matchCount,
+		matchCountAllTime,
+		lastMatched: allTime?.lastMatched,
+		status,
+		shadowedBy: status === 'shadowed' ? shadowedBy.get(rule.id) : undefined,
+		note: `${kind} id`,
+	};
+}
+
 function hygieneSuggestion(finding: RuleFinding): RuleSuggestion {
 	const invalid = finding.status === 'invalid';
 	const shadowed = finding.status === 'shadowed';
@@ -189,6 +197,7 @@ function hygieneSuggestion(finding: RuleFinding): RuleSuggestion {
 	};
 }
 
+// fallow-ignore-next-line complexity -- this composes independently tested analytics projections and readers.
 export function analyzeRules(
 	manifest: Manifest,
 	auditLog: AuditLogReader,
@@ -213,18 +222,28 @@ export function analyzeRules(
 	const windowRows = windowMatchesAllTime ? allTimeRows : auditLog.matchedRuleCounts(filter);
 	const windowCounts = matchedRuleCountMap(windowRows, workspace?.id);
 	const analyzedRules = workspace?.rules ?? manifest.rules;
+	const analyzedStructuredRules = workspace ? (workspace.structuredRules ?? []) : (manifest.structuredRules ?? []);
+	const analyzedGuards = workspace ? (workspace.guards ?? []) : (manifest.guards ?? []);
 	const rulePatterns = Object.entries(analyzedRules);
 
 	// Empirical shadow detection: replay recent history and record cases where
 	// a rule would have matched but an earlier rule consumed the call.
 	const replayEntries =
 		options.projection !== 'summary' || rulePatterns.length > 0 ? auditLog.listRecentFiltered(filter, replayLimit) : [];
-	const shadowedBy = empiricalShadows(replayEntries, analyzedRules);
+	const shadowedBy = empiricalShadows(replayEntries, manifest, workspace ? 'workspace' : 'global', workspace?.id);
 
 	// Static shadow detection: a wildcard-free rule whose literal text an
 	// earlier rule already matches can never win.
 	addStaticShadows(rulePatterns, shadowedBy);
-	const rules = rulePatterns.map((entry) => ruleFinding(entry, workspace?.id, allTimeCounts, windowCounts, shadowedBy));
+	const rules = [
+		...analyzedStructuredRules.map((rule) =>
+			structuredFinding(rule, workspace?.id, allTimeCounts, windowCounts, 'structured rule', shadowedBy)
+		),
+		...analyzedGuards.map((guard) =>
+			structuredFinding(guard, workspace?.id, allTimeCounts, windowCounts, 'guard', shadowedBy)
+		),
+		...rulePatterns.map((entry) => ruleFinding(entry, workspace?.id, allTimeCounts, windowCounts, shadowedBy)),
+	];
 	if (options.projection === 'summary') {
 		return {
 			projection: 'summary',
@@ -252,7 +271,12 @@ export function analyzeRules(
 	);
 
 	const hygieneSuggestions: RuleSuggestion[] = rules
-		.filter((finding) => finding.status === 'dead' || finding.status === 'invalid' || finding.status === 'shadowed')
+		.filter(
+			(finding) =>
+				finding.note !== 'structured rule id' &&
+				finding.note !== 'guard id' &&
+				(finding.status === 'dead' || finding.status === 'invalid' || finding.status === 'shadowed')
+		)
 		.map(hygieneSuggestion);
 
 	const suggestions = [...minedSuggestions, ...hygieneSuggestions];

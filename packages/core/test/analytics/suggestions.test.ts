@@ -75,7 +75,10 @@ describe('analytics > rule suggestions', () => {
 			recordApproval({ command: `git push origin branch-${i}` }, 'approved');
 		}
 
-		const suggestions = suggestRules(makeManifest(), store);
+		const suggestions = suggestRules(
+			makeManifest({ policy: { default_unknown: 'approve', approval_method: 'web' } }),
+			store
+		);
 
 		const suggestion = suggestions.find((s) => s.pattern === 'git push *');
 		expect(suggestion?.decision).toBe('allow');
@@ -92,6 +95,31 @@ describe('analytics > rule suggestions', () => {
 			gapCount: 5,
 		});
 		expect(suggestion?.impact?.gaps).toHaveLength(5);
+	});
+
+	test('projects suggestion impact through guards instead of assuming a textual allow wins', () => {
+		for (let i = 0; i < 5; i += 1) {
+			recordApproval(
+				{
+					tool: 'read',
+					command: `read /work/secret-${i}.env`,
+					inputs: { tool_input: { file_path: `/work/secret-${i}.env` } },
+				},
+				'approved',
+				'readonly'
+			);
+		}
+		const manifest = makeManifest({
+			policy: { default_unknown: 'approve', approval_method: 'web' },
+			guards: [{ id: 'credentials', decision: 'block', paths: ['**/*.env'] }],
+		});
+
+		const suggestion = suggestRules(manifest, store).find((item) => item.pattern === 'read /work/*');
+
+		expect(suggestion?.decision).toBe('allow');
+		expect(suggestion?.impact?.after).toEqual({ allow: 0, block: 5, approve: 0 });
+		expect(suggestion?.impact?.decisionChanges).toBe(0);
+		expect(suggestion?.conflicts).toEqual([]);
 	});
 
 	test('suggests block for consistently denied clusters', () => {

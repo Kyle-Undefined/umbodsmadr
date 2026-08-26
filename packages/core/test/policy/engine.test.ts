@@ -20,6 +20,122 @@ test('legacy programmatic manifests without workspaces retain global policy beha
 	});
 });
 
+describe('engine > structured policy', () => {
+	test('returns all selector-aware matches while identifying the enforcement winner', () => {
+		const engine = new PolicyEngine(
+			makeManifest({
+				structuredRules: [{ id: 'status', decision: 'allow', commands: ['git status'] }],
+				rules: { 'git *': 'block' },
+			})
+		);
+		const trace = engine.evaluateWithTrace(makeCall({ command: 'git status' }));
+		expect(trace.result).toMatchObject({ decision: 'allow', matchedRule: 'status' });
+		expect(trace.matches).toEqual([
+			expect.objectContaining({ id: 'status', selected: true, scope: 'global' }),
+			expect.objectContaining({ id: 'git *', selected: false, scope: 'global' }),
+		]);
+	});
+	test('ANDs selector kinds and ORs values within a selector', () => {
+		const engine = new PolicyEngine(
+			makeManifest({
+				structuredRules: [
+					{
+						id: 'safe-repository-reads',
+						decision: 'allow',
+						tools: ['read', 'grep'],
+						paths: ['/work/repo/**'],
+						classifications: ['readonly'],
+					},
+				],
+			})
+		);
+
+		const allowed = engine.evaluate(
+			makeCall({ tool: 'Read', command: '/work/repo/src/app.ts', inputs: { file_path: '/work/repo/src/app.ts' } })
+		);
+		const outside = engine.evaluate(
+			makeCall({ tool: 'Read', command: '/tmp/app.ts', inputs: { file_path: '/tmp/app.ts' } })
+		);
+		expect(allowed).toMatchObject({ decision: 'allow', matchedRule: 'safe-repository-reads' });
+		expect(outside.matchedRule).toBeUndefined();
+	});
+
+	test('global guards cannot be relaxed by workspace or legacy allows', () => {
+		const engine = new PolicyEngine(
+			makeManifest({
+				guards: [{ id: 'credentials', decision: 'block', paths: ['**/.env'] }],
+				rules: { '*': 'allow' },
+				workspaces: [
+					{
+						id: 'relaxed',
+						roots: ['/work/repo'],
+						rules: { '*': 'allow' },
+						structuredRules: [{ id: 'all-reads', decision: 'allow', tools: ['read'] }],
+					},
+				],
+			})
+		);
+
+		const result = engine.evaluate(
+			makeCall({
+				tool: 'Read',
+				command: '/work/repo/.env',
+				workingDirectory: '/work/repo',
+				inputs: { file_path: '/work/repo/.env' },
+			})
+		);
+		expect(result).toMatchObject({ decision: 'block', matchedRule: 'credentials', policyScope: 'global' });
+		expect(result.reason).toContain('guard');
+	});
+
+	test('structured path guards protect directory searches through a hidden-file probe', () => {
+		const engine = new PolicyEngine(
+			makeManifest({
+				policy: { default_unknown: 'approve', approval_method: 'web' },
+				guards: [{ id: 'credentials', decision: 'block', paths: ['**/.env'] }],
+			})
+		);
+		const result = engine.evaluate(makeCall({ tool: 'grep', command: '/work/repo' }));
+		expect(result.decision).toBe('approve');
+		expect(result.reason).toContain('hidden files');
+	});
+
+	test('workspace guards run before workspace and global rules', () => {
+		const engine = new PolicyEngine(
+			makeManifest({
+				structuredRules: [{ id: 'publish', decision: 'approve', commands: ['git push *'] }],
+				workspaces: [
+					{
+						id: 'repo',
+						roots: ['/work/repo'],
+						rules: {},
+						structuredRules: [{ id: 'workspace-publish', decision: 'allow', commands: ['git push *'] }],
+						guards: [{ id: 'no-force-push', decision: 'block', commands: ['git push --force *'] }],
+					},
+				],
+			})
+		);
+
+		const result = engine.evaluate(
+			makeCall({ command: 'git push --force origin main', workingDirectory: '/work/repo' })
+		);
+		expect(result).toMatchObject({ decision: 'block', matchedRule: 'no-force-push', policyScope: 'workspace' });
+	});
+
+	test('structured rules take precedence over legacy rules in the same scope', () => {
+		const engine = new PolicyEngine(
+			makeManifest({
+				structuredRules: [{ id: 'structured-publish', decision: 'block', commands: ['git push *'] }],
+				rules: { 'git push *': 'allow' },
+			})
+		);
+		expect(engine.evaluate(makeCall({ command: 'git push origin main' }))).toMatchObject({
+			decision: 'block',
+			matchedRule: 'structured-publish',
+		});
+	});
+});
+
 // ── Rule matching takes priority ─────────────────────────────
 
 describe('engine > rule matching', () => {

@@ -222,6 +222,141 @@ id = "conceptual"
 			},
 		]);
 	});
+
+	test('supports ordered structured rules and block-only guards', async () => {
+		const path = writeToml(`
+[env]
+name = "test"
+version = "1.0.0"
+timeout = 5
+
+[policy]
+default_unknown = "approve"
+approval_method = "web"
+
+[[rule]]
+id = "repository-reads"
+decision = "allow"
+tools = ["read", "grep"]
+paths = ["/work/repo/**"]
+classifications = ["readonly"]
+reason = "normal repository read"
+
+[[guard]]
+id = "credentials"
+paths = ["**/.env", "**/*.pem"]
+
+[[workspaces]]
+id = "repo"
+roots = ["/work/repo"]
+
+[[workspaces.rule]]
+id = "normal-edits"
+decision = "allow"
+tools = ["edit", "write"]
+
+[[workspaces.guard]]
+id = "no-force-push"
+commands = ["git push --force *"]
+`);
+
+		const manifest = await loadManifest(path);
+		expect(manifest.structuredRules?.[0]).toMatchObject({ id: 'repository-reads', decision: 'allow' });
+		expect(manifest.guards?.[0]).toMatchObject({
+			id: 'credentials',
+			decision: 'block',
+			paths: ['**/.env', '**/*.pem'],
+		});
+		expect(manifest.workspaces?.[0]?.structuredRules?.[0]?.id).toBe('normal-edits');
+		expect(manifest.workspaces?.[0]?.guards?.[0]).toMatchObject({ id: 'no-force-push', decision: 'block' });
+	});
+});
+
+describe('loadManifest > structured policy validation', () => {
+	test('rejects a guard that attempts to allow', async () => {
+		const path = writeToml(`
+[env]
+name = "test"
+version = "1.0.0"
+timeout = 5
+[policy]
+default_unknown = "block"
+approval_method = "web"
+[[guard]]
+id = "unsafe"
+decision = "allow"
+tools = ["read"]
+`);
+		await expect(loadManifest(path)).rejects.toThrow('decision must be block');
+	});
+
+	test('rejects selector-free and duplicate structured rules', async () => {
+		const noSelector = writeToml(`
+[env]
+name = "test"
+version = "1.0.0"
+timeout = 5
+[policy]
+default_unknown = "block"
+approval_method = "web"
+[[rule]]
+id = "empty"
+decision = "allow"
+`);
+		await expect(loadManifest(noSelector)).rejects.toThrow('at least one selector');
+
+		const duplicate = writeToml(`
+[env]
+name = "test"
+version = "1.0.0"
+timeout = 5
+[policy]
+default_unknown = "block"
+approval_method = "web"
+[[rule]]
+id = "same"
+decision = "allow"
+tools = ["read"]
+[[rule]]
+id = "same"
+decision = "block"
+tools = ["write"]
+`);
+		await expect(loadManifest(duplicate)).rejects.toThrow('duplicated');
+	});
+
+	test('rejects invalid structured regexes and identity collisions with legacy rules', async () => {
+		const invalidRegex = writeToml(`
+[env]
+name = "test"
+version = "1.0.0"
+timeout = 5
+[policy]
+default_unknown = "block"
+approval_method = "web"
+[[rule]]
+id = "invalid"
+decision = "allow"
+commands = ["/[invalid/"]
+`);
+		await expect(loadManifest(invalidRegex)).rejects.toThrow('invalid regex');
+
+		const collision = writeToml(`
+[env]
+name = "test"
+version = "1.0.0"
+timeout = 5
+[policy]
+default_unknown = "block"
+approval_method = "web"
+[rules]
+credentials = "allow"
+[[guard]]
+id = "credentials"
+paths = ["**/.env"]
+`);
+		await expect(loadManifest(collision)).rejects.toThrow('must not collide');
+	});
 });
 
 // ── Invalid manifests ────────────────────────────────────────

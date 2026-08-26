@@ -2,6 +2,7 @@ import { dirname } from 'node:path';
 
 import type { AuditEntry, Manifest } from '../core/types.ts';
 import type { AuditLogReader } from '../db/audit-log.ts';
+import { PolicyEngine } from '../policy/engine.ts';
 import { matchesPattern } from '../policy/rule-matcher.ts';
 import { ruleMatchCandidates } from '../policy/rule-candidates.ts';
 import type { AuditFilter, RuleSuggestion } from './types.ts';
@@ -61,30 +62,58 @@ interface PreloadedSuggestionEntries {
 function projectImpact(
 	entries: AuditEntry[],
 	pattern: string,
-	decision: 'allow' | 'block'
+	decision: 'allow' | 'block',
+	context: SuggestionContext
 ): NonNullable<RuleSuggestion['impact']> {
-	const matchingCalls = entries.filter((entry) =>
-		ruleMatchCandidates(entry).some((candidate) => matchesPattern(candidate, pattern))
+	const baselineEngine = new PolicyEngine(context.manifest);
+	const candidateEngine = new PolicyEngine(
+		manifestWithProposal(context.manifest, context.workspaceId, pattern, decision)
 	);
-	const gaps = matchingCalls.filter((entry) => entry.matchedRule === undefined);
+	const projected = entries.map((entry) => ({
+		entry,
+		baseline: baselineEngine.evaluate(entry),
+		candidate: candidateEngine.evaluateWithTrace(entry),
+	}));
+	const matchingCalls = projected.filter(({ candidate }) =>
+		candidate.matches.some(
+			(match) => match.id === pattern && match.scope === (context.workspaceId ? 'workspace' : 'global')
+		)
+	);
+	const gaps = matchingCalls.filter(({ baseline }) => baseline.matchedRule === undefined);
 	const before = { allow: 0, block: 0, approve: 0 };
-	for (const entry of matchingCalls) before[entry.decision] += 1;
+	for (const { baseline } of matchingCalls) before[baseline.decision] += 1;
 	const after = { allow: 0, block: 0, approve: 0 };
-	after[decision] = matchingCalls.length;
+	for (const { candidate } of matchingCalls) after[candidate.result.decision] += 1;
 	return {
 		matchingCalls: matchingCalls.length,
 		explicitlyCoveredBefore: matchingCalls.length - gaps.length,
-		coverageGained: gaps.length,
+		coverageGained: gaps.filter(({ candidate }) => candidate.result.matchedRule === pattern).length,
 		before,
 		after,
-		decisionChanges: matchingCalls.filter((entry) => entry.decision !== decision).length,
-		gaps: gaps.slice(0, GAP_SAMPLE_LIMIT).map((entry, index) => ({
+		decisionChanges: matchingCalls.filter(({ baseline, candidate }) => baseline.decision !== candidate.result.decision)
+			.length,
+		gaps: gaps.slice(0, GAP_SAMPLE_LIMIT).map(({ entry, baseline }, index) => ({
 			id: entry.id ?? -(index + 1),
 			command: entry.command,
-			decision: entry.decision,
-			classification: entry.classification,
+			decision: baseline.decision,
+			classification: baseline.classification,
 		})),
 		gapCount: gaps.length,
+	};
+}
+
+function manifestWithProposal(
+	manifest: Manifest,
+	workspaceId: string | undefined,
+	pattern: string,
+	decision: 'allow' | 'block'
+): Manifest {
+	if (!workspaceId) return { ...manifest, rules: { ...manifest.rules, [pattern]: decision } };
+	return {
+		...manifest,
+		workspaces: (manifest.workspaces ?? []).map((workspace) =>
+			workspace.id === workspaceId ? { ...workspace, rules: { ...workspace.rules, [pattern]: decision } } : workspace
+		),
 	};
 }
 
@@ -184,9 +213,15 @@ function clusterConflicts(cluster: Cluster, proposal: ClusterProposal, context: 
 	if (preemption) conflicts.push(preemption);
 
 	if (proposal.decision === 'allow') {
-		const flipped = context.blockedEntries.filter((entry) =>
-			ruleMatchCandidates(entry).some((candidate) => matchesPattern(candidate, cluster.pattern))
+		const baselineEngine = new PolicyEngine(context.manifest);
+		const candidateEngine = new PolicyEngine(
+			manifestWithProposal(context.manifest, context.workspaceId, cluster.pattern, proposal.decision)
 		);
+		const flipped = context.blockedEntries.filter((entry) => {
+			const before = baselineEngine.evaluate(entry);
+			const after = candidateEngine.evaluate(entry);
+			return before.decision !== 'allow' && after.decision === 'allow';
+		});
 		if (flipped.length > 0) {
 			conflicts.push(
 				`would allow ${flipped.length} call(s) that were previously blocked or denied (e.g. "${flipped[0]?.command}")`
@@ -224,7 +259,7 @@ function suggestionForCluster(cluster: Cluster, context: SuggestionContext): Rul
 			sampleCommands: [...cluster.commands].slice(0, SAMPLE_LIMIT),
 		},
 		conflicts: clusterConflicts(cluster, proposal, context),
-		impact: projectImpact(context.replayEntries, cluster.pattern, proposal.decision),
+		impact: projectImpact(context.replayEntries, cluster.pattern, proposal.decision, context),
 	};
 }
 
