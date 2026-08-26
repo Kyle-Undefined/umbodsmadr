@@ -143,7 +143,7 @@ export interface ApprovalHotspot {
 	sampleCommands: string[];
 }
 
-export type RuleStatus = 'active' | 'stale' | 'dead' | 'shadowed' | 'invalid';
+export type RuleStatus = 'active' | 'stale' | 'never_observed' | 'shadowed' | 'invalid';
 
 export interface RuleFinding {
 	pattern: string;
@@ -158,7 +158,12 @@ export interface RuleFinding {
 	note?: string;
 }
 
-export type SuggestionKind = 'promote-approved' | 'block-denied' | 'remove-dead' | 'fix-invalid' | 'reorder-shadowed';
+export type SuggestionKind =
+	| 'promote-approved'
+	| 'block-denied'
+	| 'remove-never-observed'
+	| 'fix-invalid'
+	| 'reorder-shadowed';
 
 export interface RuleSuggestion {
 	pattern: string;
@@ -171,6 +176,8 @@ export interface RuleSuggestion {
 		occurrences: number;
 		approvedCount: number;
 		deniedCount: number;
+		pendingCount?: number;
+		stalePendingCount?: number;
 		distinctCommands: number;
 		sampleCommands: string[];
 	};

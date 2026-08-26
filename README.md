@@ -108,6 +108,8 @@ umbod policy simulate ./candidate.toml \
 
 Use `--all` for an explicitly unbounded replay, `--database` to select a different audit database, and `--json` for the complete report. Available failure checks are `blocked-to-allow`, `approve-to-allow`, `previously-denied-to-allow`, `unresolved-workspace`, and `truncated`. Stored historical outcomes, freshly replayed baseline decisions, and candidate decisions remain separate in the report.
 
+Rule analytics label rules with no historical match as `never_observed` rather than “dead.” Suggestions calculate approval purity and minimum evidence from resolved approvals only, report pending and stale-pending requests separately, and require double the configured evidence, zero denials, and zero pending requests before proposing a permanent allow for destructive calls.
+
 ## workspaces
 
 A workspace is a named policy scope. It can represent a repository, IDE workspace, client environment, container, or any other boundary meaningful to the host. It is not tied to a particular agent or application.

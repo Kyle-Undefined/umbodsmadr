@@ -95,14 +95,14 @@ describe('analytics > rule analysis', () => {
 			shadowedBy: 'status',
 		});
 	});
-	test('marks matched rules active and never-matched rules dead', () => {
+	test('marks matched rules active and never-matched rules never_observed', () => {
 		const manifest = makeManifest({ rules: { 'git *': 'allow', 'docker *': 'approve' } });
 		record(manifest, { command: 'git status' });
 
 		const analysis = analyzeRules(manifest, store);
 
 		expect(analysis.rules.find((rule) => rule.pattern === 'git *')?.status).toBe('active');
-		expect(analysis.rules.find((rule) => rule.pattern === 'docker *')?.status).toBe('dead');
+		expect(analysis.rules.find((rule) => rule.pattern === 'docker *')?.status).toBe('never_observed');
 		expect(store.matchedRuleCountsCalls).toBe(1);
 	});
 
@@ -194,7 +194,7 @@ describe('analytics > rule analysis', () => {
 			project: '/work/current',
 		});
 
-		expect(analysis.rules.find((rule) => rule.pattern === '/^git push/')?.status).toBe('dead');
+		expect(analysis.rules.find((rule) => rule.pattern === '/^git push/')?.status).toBe('never_observed');
 	});
 
 	test('reports approval hotspots with resolution outcomes', () => {
@@ -290,7 +290,7 @@ describe('analytics > rule analysis', () => {
 			status: 'active',
 			matchCount: 1,
 		});
-		expect(analysis.rules.find((rule) => rule.pattern === 'terraform plan *')?.status).toBe('dead');
+		expect(analysis.rules.find((rule) => rule.pattern === 'terraform plan *')?.status).toBe('never_observed');
 		expect(analysis.tomlSnippet).toContain('Workspace target: "client"');
 		expect(analysis.tomlSnippet).toContain('Move and uncomment each proposed entry');
 		expect(analysis.tomlSnippet).not.toContain('\n[workspaces.rules]\n');

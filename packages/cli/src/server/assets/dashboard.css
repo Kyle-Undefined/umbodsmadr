@@ -1560,7 +1560,7 @@ body {
 .health-chip--stale {
 	color: var(--warning);
 }
-.health-chip--dead,
+.health-chip--never_observed,
 .health-chip--invalid,
 .health-chip--shadowed {
 	color: var(--danger);

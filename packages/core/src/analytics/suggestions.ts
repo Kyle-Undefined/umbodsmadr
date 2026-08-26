@@ -16,6 +16,7 @@ const DEFAULT_MIN_OCCURRENCES = 5;
 const PURITY_THRESHOLD = 0.9;
 const SAMPLE_LIMIT = 3;
 const GAP_SAMPLE_LIMIT = 50;
+const STALE_PENDING_MS = 24 * 60 * 60 * 1000;
 
 /** Commands whose first two tokens form the natural rule prefix ("git push", "npm run", ...). */
 const MULTIWORD_COMMANDS = new Set([
@@ -37,6 +38,8 @@ interface Cluster {
 	entries: AuditEntry[];
 	approved: number;
 	denied: number;
+	pending: number;
+	stalePending: number;
 	destructive: number;
 	commands: Set<string>;
 }
@@ -142,6 +145,7 @@ export function clusterKey(entry: AuditEntry): string | undefined {
 	return undefined;
 }
 
+// fallow-ignore-next-line complexity -- one bounded aggregation pass keeps approval states mutually consistent.
 function buildClusters(entries: AuditEntry[]): Cluster[] {
 	const clusters = new Map<string, Cluster>();
 	for (const entry of entries) {
@@ -154,6 +158,8 @@ function buildClusters(entries: AuditEntry[]): Cluster[] {
 			entries: [],
 			approved: 0,
 			denied: 0,
+			pending: 0,
+			stalePending: 0,
 			destructive: 0,
 			commands: new Set<string>(),
 		};
@@ -161,6 +167,10 @@ function buildClusters(entries: AuditEntry[]): Cluster[] {
 		cluster.commands.add(entry.command);
 		if (entry.approvalStatus === 'approved') cluster.approved += 1;
 		if (entry.approvalStatus === 'denied') cluster.denied += 1;
+		if (entry.approvalStatus === 'pending') {
+			cluster.pending += 1;
+			if (Date.now() - Date.parse(entry.timestamp) >= STALE_PENDING_MS) cluster.stalePending += 1;
+		}
 		if (entry.classification === 'destructive') cluster.destructive += 1;
 		clusters.set(pattern, cluster);
 	}
@@ -178,7 +188,7 @@ function dominantProposal(cluster: Cluster): ClusterProposal | undefined {
 
 function destructiveProposalIsSafe(cluster: Cluster, proposal: ClusterProposal, minOccurrences: number): boolean {
 	if (proposal.decision !== 'allow' || cluster.destructive === 0) return true;
-	return cluster.denied === 0 && cluster.entries.length >= minOccurrences * 2;
+	return cluster.denied === 0 && cluster.pending === 0 && cluster.approved >= minOccurrences * 2;
 }
 
 function clusterPatternIsValid(cluster: Cluster): boolean {
@@ -188,7 +198,7 @@ function clusterPatternIsValid(cluster: Cluster): boolean {
 }
 
 function clusterProposal(cluster: Cluster, minOccurrences: number): ClusterProposal | undefined {
-	if (cluster.entries.length < minOccurrences) return undefined;
+	if (cluster.approved + cluster.denied < minOccurrences) return undefined;
 	const proposal = dominantProposal(cluster);
 	if (!proposal || !destructiveProposalIsSafe(cluster, proposal, minOccurrences)) return undefined;
 	return clusterPatternIsValid(cluster) ? proposal : undefined;
@@ -233,10 +243,11 @@ function clusterConflicts(cluster: Cluster, proposal: ClusterProposal, context: 
 
 function clusterRationale(cluster: Cluster, proposal: ClusterProposal): string {
 	const occurrences = cluster.entries.length;
+	const pending = cluster.pending > 0 ? `; ${cluster.pending} pending (${cluster.stalePending} stale)` : '';
 	const rationale =
 		proposal.decision === 'allow'
-			? `${occurrences} approval prompts, ${cluster.approved} approved / ${cluster.denied} denied — promote to allow`
-			: `${occurrences} approval prompts, ${cluster.denied} denied / ${cluster.approved} approved — block outright`;
+			? `${occurrences} approval prompts, ${cluster.approved} approved / ${cluster.denied} denied${pending} — promote to allow`
+			: `${occurrences} approval prompts, ${cluster.denied} denied / ${cluster.approved} approved${pending} — block outright`;
 	return cluster.destructive > 0 && proposal.decision === 'allow'
 		? `${rationale} (includes ${cluster.destructive} destructive-classified call(s) — review carefully)`
 		: rationale;
@@ -255,6 +266,8 @@ function suggestionForCluster(cluster: Cluster, context: SuggestionContext): Rul
 			occurrences: cluster.entries.length,
 			approvedCount: cluster.approved,
 			deniedCount: cluster.denied,
+			pendingCount: cluster.pending,
+			stalePendingCount: cluster.stalePending,
 			distinctCommands: cluster.commands.size,
 			sampleCommands: [...cluster.commands].slice(0, SAMPLE_LIMIT),
 		},

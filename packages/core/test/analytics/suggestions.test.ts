@@ -140,6 +140,23 @@ describe('analytics > rule suggestions', () => {
 		expect(suggestRules(makeManifest(), store)).toHaveLength(0);
 	});
 
+	test('separates pending and stale approvals from resolved promotion evidence', () => {
+		for (let i = 0; i < 4; i += 1) recordApproval({ command: `git push origin approved-${i}` }, 'approved');
+		for (let i = 0; i < 5; i += 1) recordApproval({ command: `git push origin pending-${i}` }, 'pending');
+		expect(suggestRules(makeManifest(), store)).toHaveLength(0);
+
+		recordApproval({ command: 'git push origin approved-4' }, 'approved');
+		recordApproval({ command: 'git push origin stale', timestamp: '2020-01-01T00:00:00.000Z' }, 'pending');
+		const suggestion = suggestRules(makeManifest(), store).find((item) => item.pattern === 'git push *');
+		expect(suggestion?.evidence).toMatchObject({
+			approvedCount: 5,
+			deniedCount: 0,
+			pendingCount: 6,
+			stalePendingCount: 6,
+		});
+		expect(suggestion?.rationale).toContain('6 pending (6 stale)');
+	});
+
 	test('skips mixed-outcome clusters', () => {
 		for (let i = 0; i < 3; i += 1) recordApproval({ command: `gh pr create -t x${i}` }, 'approved');
 		for (let i = 0; i < 3; i += 1) recordApproval({ command: `gh pr merge ${i}` }, 'denied');

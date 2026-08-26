@@ -115,7 +115,7 @@ function findingState(
 		return { status: 'invalid', note: `regex fails to compile: ${invalidNote}` };
 	}
 	if (allTimeCount === 0) {
-		return { status: shadowedBy.has(pattern) ? 'shadowed' : 'dead' };
+		return { status: shadowedBy.has(pattern) ? 'shadowed' : 'never_observed' };
 	}
 	return { status: windowCount === 0 ? 'stale' : 'active' };
 }
@@ -159,7 +159,13 @@ function structuredFinding(
 	const matchCount = matchedCount(inWindow);
 	const matchCountAllTime = matchedCount(allTime);
 	const status =
-		matchCountAllTime === 0 ? (shadowedBy.has(rule.id) ? 'shadowed' : 'dead') : matchCount === 0 ? 'stale' : 'active';
+		matchCountAllTime === 0
+			? shadowedBy.has(rule.id)
+				? 'shadowed'
+				: 'never_observed'
+			: matchCount === 0
+				? 'stale'
+				: 'active';
 	return {
 		pattern: rule.id,
 		decision: rule.decision,
@@ -180,7 +186,7 @@ function hygieneSuggestion(finding: RuleFinding): RuleSuggestion {
 		pattern: finding.pattern,
 		decision: finding.decision,
 		workspaceId: finding.workspaceId,
-		kind: invalid ? 'fix-invalid' : shadowed ? 'reorder-shadowed' : 'remove-dead',
+		kind: invalid ? 'fix-invalid' : shadowed ? 'reorder-shadowed' : 'remove-never-observed',
 		rationale: invalid
 			? `${finding.note ?? 'invalid regex'} — this rule silently never matches`
 			: shadowed
@@ -275,7 +281,7 @@ export function analyzeRules(
 			(finding) =>
 				finding.note !== 'structured rule id' &&
 				finding.note !== 'guard id' &&
-				(finding.status === 'dead' || finding.status === 'invalid' || finding.status === 'shadowed')
+				(finding.status === 'never_observed' || finding.status === 'invalid' || finding.status === 'shadowed')
 		)
 		.map(hygieneSuggestion);
 
