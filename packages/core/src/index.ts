@@ -21,6 +21,8 @@ export {
 } from './policy/workspace.ts';
 export type { WorkspaceResolution, WorkspaceResolutionSource } from './policy/workspace.ts';
 export { classifyToolCall } from './policy/classifier.ts';
+export { analyzeShellCommand } from './policy/shell-analyzer.ts';
+export type { ShellOperationAnalysis } from './policy/shell-analyzer.ts';
 export { createDefaultManifestSource, loadManifest, parseManifestSource } from './config/manifest.ts';
 export type { DefaultManifestOptions } from './config/manifest.ts';
 export { PolicyManager } from './policy/policy-manager.ts';

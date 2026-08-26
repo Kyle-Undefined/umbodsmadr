@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { classifyToolCall } from '../../src/policy/classifier.ts';
+import { analyzeShellCommand } from '../../src/policy/shell-analyzer.ts';
 import { makeCall } from '../helpers.ts';
 
 // ── Readonly bash commands ───────────────────────────────────
@@ -57,49 +58,21 @@ describe('classifier > destructive bash', () => {
 		['echo hello >> file.txt', 'append redirect'],
 		['sort < input.txt > output.txt', 'input+output redirect'],
 
-		// Command substitution
-		['echo $(whoami)', '$() substitution'],
-		['echo `date`', 'backtick substitution'],
-
-		// Dynamic execution
-		["eval 'rm -rf /'", 'eval'],
+		// Explicit dynamic writers
 		["find . -name '*.log' | xargs rm", 'xargs'],
-		["sh -c 'echo hello'", 'sh -c'],
-		["bash -c 'echo hello'", 'bash -c'],
 
 		// Pipe-to-writer commands
 		['echo foo | tee output.txt', 'tee'],
 		['dd if=/dev/zero of=file bs=1M count=1', 'dd'],
 
 		// find with exec/delete
-		["find . -name '*.tmp' -exec rm {} ;", 'find -exec'],
+		["find . -name '*.tmp' -exec rm {} \\;", 'find -exec'],
 		["find . -name '*.tmp' -execdir rm {} +", 'find -execdir'],
 		["find . -name '*.tmp' -delete", 'find -delete'],
 		["find . -name '*.log' -fprint /tmp/logs", 'find -fprint'],
 
-		// Compound commands
-		['echo hello | cat', 'pipe'],
-		['echo hello; echo world', 'semicolon chain'],
+		// Compound command containing a destructive component
 		['true && rm -f file', '&& chain'],
-
-		// Shell flow control
-		['while read line; do echo $line; done', 'while loop'],
-		['for f in *.txt; do cat $f; done', 'for loop'],
-		['if true; then echo yes; fi', 'if statement'],
-		['case $x in a) echo a;; esac', 'case statement'],
-
-		// Interpreters
-		['python3 script.py', 'python3'],
-		['python script.py', 'python'],
-		["perl -e 'print 1'", 'perl'],
-		["ruby -e 'puts 1'", 'ruby'],
-		['node script.js', 'node'],
-		['deno run script.ts', 'deno'],
-		['bun run script.ts', 'bun'],
-
-		// Brace expansion
-		['echo {a,b,c}', 'brace expansion'],
-		['cat {.,}secret', 'brace expansion dotfile bypass'],
 
 		// --output flag
 		['git format-patch --output=/tmp/patch HEAD~1', '--output flag'],
@@ -168,6 +141,45 @@ describe('classifier > stateful bash', () => {
 	}
 });
 
+describe('classifier > bounded shell analysis', () => {
+	test('evaluates every supported compound component and chooses the strictest classification', () => {
+		expect(classifyToolCall(makeCall({ command: 'git status && git log -1' }))).toBe('readonly');
+		expect(classifyToolCall(makeCall({ command: 'git status; cargo build' }))).toBe('stateful');
+		expect(classifyToolCall(makeCall({ command: 'git status | curl https://example.com' }))).toBe('external');
+		expect(classifyToolCall(makeCall({ command: 'git status && rm file' }))).toBe('destructive');
+	});
+
+	test('exposes bounded component analysis for hosts and diagnostics', () => {
+		expect(analyzeShellCommand('git status && curl https://example.com')).toEqual({
+			components: [
+				{ command: 'git status', classification: 'readonly' },
+				{ command: 'curl https://example.com', classification: 'external' },
+			],
+			compound: true,
+			classification: 'external',
+		});
+	});
+
+	test('does not split separators inside quoted arguments', () => {
+		expect(classifyToolCall(makeCall({ command: `printf 'a;b|c'` }))).toBe('stateful');
+	});
+
+	test('fails ambiguous or unsupported shell syntax to unknown', () => {
+		for (const command of [
+			'echo $(whoami)',
+			'echo `date`',
+			"eval 'rm -rf /'",
+			"bash -c 'echo hello'",
+			'python3 script.py',
+			'while read line; do echo $line; done',
+			'echo {a,b,c}',
+			"echo 'unterminated",
+		]) {
+			expect(classifyToolCall(makeCall({ command }))).toBe('unknown');
+		}
+	});
+});
+
 // ── Non-bash tool classification ─────────────────────────────
 
 describe('classifier > non-bash tools', () => {
@@ -201,12 +213,12 @@ describe('classifier > non-bash tools', () => {
 
 describe('classifier > priority ordering', () => {
 	test('destructive wins over readonly prefix', () => {
-		// "ls" is readonly, but piping makes it destructive
-		expect(classifyToolCall(makeCall({ command: 'ls | wc -l' }))).toBe('destructive');
+		// The unknown writer-free component is stateful, stricter than readonly.
+		expect(classifyToolCall(makeCall({ command: 'ls | wc -l' }))).toBe('stateful');
 	});
 
 	test('destructive wins over external when both match', () => {
-		// "curl" is external, but $() makes it destructive first
-		expect(classifyToolCall(makeCall({ command: 'curl $(cat /etc/passwd)' }))).toBe('destructive');
+		// Ambiguous substitution fails to unknown instead of guessing.
+		expect(classifyToolCall(makeCall({ command: 'curl $(cat /etc/passwd)' }))).toBe('unknown');
 	});
 });

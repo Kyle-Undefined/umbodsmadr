@@ -91,6 +91,8 @@ The audit database lives next to the manifest as `umbod.envName.db`.
 
 While `umbod start` is running, saved manifest changes are reloaded automatically. Umbod reads, parses, validates, and compiles the complete candidate before atomically activating it. A failed reload retains the previous policy. `/health` and `/api/manifest` expose `sourceHash`, `activeHash`, `loadedAt`, `generation`, and reload status, and each new audit row records the active policy hash and generation that produced its decision.
 
+Common shell pipelines and `&&`/`;` chains are tokenized without splitting quoted separators. Every component is classified and the strictest classification wins (`destructive`, then `external`, `stateful`, and `readonly`). Unsupported or ambiguous syntax such as command substitution, shell flow control, interpreter execution, or malformed quoting is classified as `unknown` and follows the configured unknown default.
+
 ### policy simulation
 
 Replay historical audit calls through both the current and a candidate manifest without activating the candidate or writing to the audit database:
