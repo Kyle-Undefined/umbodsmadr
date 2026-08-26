@@ -42,6 +42,16 @@ describe('parseEvaluatePayload', () => {
 		expect(call.timestamp).toBeDefined(); // auto-generated
 	});
 
+	test('does not trust operation metadata from the public evaluate payload', () => {
+		const result = parseEvaluatePayload({
+			agent: 'remote',
+			tool: 'custom',
+			command: 'run',
+			operation: 'filesystem.read',
+		});
+		expect(result.operation).toBeUndefined();
+	});
+
 	test('rejects non-object payload', () => {
 		expect(() => parseEvaluatePayload('not an object')).toThrow('invalid tool call payload');
 		expect(() => parseEvaluatePayload(null)).toThrow('invalid tool call payload');

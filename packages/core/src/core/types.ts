@@ -35,6 +35,8 @@ export interface StructuredRuleSelectors {
 	classifications?: CallClassification[];
 	/** Match any listed agent name. */
 	agents?: string[];
+	/** Match a trusted canonical host operation ID. */
+	operations?: string[];
 }
 
 export interface StructuredRule extends StructuredRuleSelectors {
@@ -82,6 +84,8 @@ export interface Manifest {
 export interface ToolCall {
 	agent: string;
 	tool: string;
+	/** Trusted canonical host/adaptor operation ID. */
+	operation?: string;
 	command: string;
 	args?: string[];
 	workingDirectory?: string;

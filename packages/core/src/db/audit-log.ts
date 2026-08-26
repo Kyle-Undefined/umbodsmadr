@@ -72,6 +72,7 @@ function rowToAuditEntry(row: Record<string, unknown>): StoredAuditEntry {
 		id: finiteNumber(rawId, 'audit log row id'),
 		agent: String(row.agent),
 		tool: String(row.tool),
+		operation: optionalString(row.operation),
 		command: String(row.command),
 		args: safeJsonParse<string[]>(row.args_json, []),
 		workingDirectory: optionalString(row.working_directory),
@@ -107,6 +108,7 @@ function rowToAuditEntrySummary(row: Record<string, unknown>): AuditEntrySummary
 		id: finiteNumber(row.id, 'audit log row id'),
 		agent: String(row.agent),
 		tool: String(row.tool),
+		operation: optionalString(row.operation),
 		command: String(row.command),
 		timestamp: String(row.timestamp),
 		decision: enumValue(row.decision, VALID_DECISIONS, 'decision in audit log row'),
@@ -136,6 +138,7 @@ function auditEntryValues(
 	return [
 		call.agent,
 		call.tool,
+		nullable(call.operation),
 		call.command,
 		normalizeSearchText(call.command),
 		jsonOr(call.args, []),
@@ -187,6 +190,7 @@ function validateReadableSchema(database: Database): void {
 		'id',
 		'agent',
 		'tool',
+		'operation',
 		'command',
 		'command_search',
 		'args_json',
@@ -334,7 +338,7 @@ export class AuditLogReader {
 	}
 
 	listRecent(limit?: number): StoredAuditEntry[] {
-		let sql = `SELECT al.id, al.agent, al.tool, al.command, al.args_json, al.working_directory, al.workspace_id, al.inputs_json,
+		let sql = `SELECT al.id, al.agent, al.tool, al.operation, al.command, al.args_json, al.working_directory, al.workspace_id, al.inputs_json,
                 al.timestamp, al.decision, al.classification, al.matched_rule, al.policy_scope, al.resolved_workspace_id, al.reason,
                 al.session_id, al.tool_use_id, al.policy_hash, al.policy_generation,
                 ar.status AS approval_status, ar.resolved_at AS approval_resolved_at
@@ -353,7 +357,7 @@ export class AuditLogReader {
 		const { where, params } = this.buildFilter(filter, 'al');
 		const rows = this.database
 			.query(
-				`SELECT al.id, al.agent, al.tool, al.command, al.args_json, al.working_directory, al.workspace_id, al.inputs_json,
+				`SELECT al.id, al.agent, al.tool, al.operation, al.command, al.args_json, al.working_directory, al.workspace_id, al.inputs_json,
                 al.timestamp, al.decision, al.classification, al.matched_rule, al.policy_scope, al.resolved_workspace_id, al.reason,
                 al.session_id, al.tool_use_id, al.policy_hash, al.policy_generation,
                 ar.status AS approval_status, ar.resolved_at AS approval_resolved_at
@@ -379,7 +383,7 @@ export class AuditLogReader {
 	getEntry(id: number): StoredAuditEntry | undefined {
 		const row = this.database
 			.query(
-				`SELECT al.id, al.agent, al.tool, al.command, al.args_json, al.working_directory, al.workspace_id, al.inputs_json,
+				`SELECT al.id, al.agent, al.tool, al.operation, al.command, al.args_json, al.working_directory, al.workspace_id, al.inputs_json,
                 al.timestamp, al.decision, al.classification, al.matched_rule, al.policy_scope, al.resolved_workspace_id, al.reason,
                 al.session_id, al.tool_use_id, al.policy_hash, al.policy_generation,
                 ar.status AS approval_status, ar.resolved_at AS approval_resolved_at
@@ -419,8 +423,8 @@ export class AuditLogReader {
 		const cursorParams = query.cursor === undefined ? params : [...params, query.cursor];
 		const select =
 			projection === 'summary'
-				? `al.id, al.agent, al.tool, al.command, al.timestamp, al.decision, al.classification`
-				: `al.id, al.agent, al.tool, al.command, al.args_json, al.working_directory, al.workspace_id, al.inputs_json,
+				? `al.id, al.agent, al.tool, al.operation, al.command, al.timestamp, al.decision, al.classification`
+				: `al.id, al.agent, al.tool, al.operation, al.command, al.args_json, al.working_directory, al.workspace_id, al.inputs_json,
              al.timestamp, al.decision, al.classification, al.matched_rule, al.policy_scope, al.resolved_workspace_id, al.reason,
              al.session_id, al.tool_use_id, al.policy_hash, al.policy_generation,
              ar.status AS approval_status, ar.resolved_at AS approval_resolved_at`;
@@ -459,7 +463,7 @@ export class AuditLogReader {
 		const rows = this.database
 			.query(
 				`SELECT ar.id AS approval_id, ar.audit_log_id, ar.status, ar.created_at, ar.resolved_at,
-	                al.agent, al.tool, al.command, al.args_json, al.working_directory, al.workspace_id, al.inputs_json,
+	                al.agent, al.tool, al.operation, al.command, al.args_json, al.working_directory, al.workspace_id, al.inputs_json,
 	                al.timestamp, al.decision, al.classification, al.matched_rule, al.policy_scope, al.resolved_workspace_id, al.reason,
 	                al.session_id, al.tool_use_id, al.policy_hash, al.policy_generation
          FROM approval_requests ar
@@ -493,6 +497,7 @@ export class AuditLogReader {
 			['working_directory', '=', filter.project],
 			['resolved_workspace_id', '=', filter.workspace],
 			['tool', '=', filter.tool],
+			['operation', '=', filter.operation],
 			['classification', '=', filter.classification],
 			['decision', '=', filter.decision],
 		];
@@ -758,7 +763,7 @@ export class AuditLogReader {
 		const { where, params } = this.buildFilter(filter, 'al');
 		const rows = this.database
 			.query(
-				`SELECT al.id, al.agent, al.tool, al.command, al.args_json, al.working_directory, al.workspace_id, al.inputs_json,
+				`SELECT al.id, al.agent, al.tool, al.operation, al.command, al.args_json, al.working_directory, al.workspace_id, al.inputs_json,
                 al.timestamp, al.decision, al.classification, al.matched_rule, al.policy_scope, al.resolved_workspace_id, al.reason,
                 al.session_id, al.tool_use_id, al.policy_hash, al.policy_generation,
                 ar.status AS approval_status, ar.resolved_at AS approval_resolved_at
@@ -943,10 +948,10 @@ export class AuditLogStore extends AuditLogReader {
 		const timestamp = call.timestamp ?? new Date().toISOString();
 		const insertEntry = this.database.query(
 			`INSERT INTO audit_log (
-        agent, tool, command, command_search, args_json, working_directory, workspace_id, inputs_json, timestamp,
+        agent, tool, operation, command, command_search, args_json, working_directory, workspace_id, inputs_json, timestamp,
         decision, classification, matched_rule, policy_scope, resolved_workspace_id, reason, session_id, tool_use_id,
         policy_hash, policy_generation
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`
 		);
 		const insertApproval = this.database.query(
 			'INSERT INTO approval_requests (audit_log_id, created_at) VALUES (?, ?) RETURNING id'

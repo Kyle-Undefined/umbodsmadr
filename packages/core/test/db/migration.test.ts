@@ -145,6 +145,7 @@ describe('audit log > migration', () => {
 		expect(columns.has('command_search')).toBe(true);
 		expect(columns.has('policy_hash')).toBe(true);
 		expect(columns.has('policy_generation')).toBe(true);
+		expect(columns.has('operation')).toBe(true);
 		const indexes = indexNames(dbPath);
 		expect(indexes.has('audit_log_workspace_timestamp_idx')).toBe(true);
 		expect(indexes.has('audit_log_approval_hotspot_idx')).toBe(true);
@@ -240,6 +241,7 @@ describe('audit log > migration', () => {
 			{
 				agent: 'claude',
 				tool: 'bash',
+				operation: 'git.status',
 				command: 'git status',
 				timestamp: new Date().toISOString(),
 				sessionId: 'sess-new-1',
@@ -261,6 +263,7 @@ describe('audit log > migration', () => {
 		expect(entry?.sessionId).toBe('sess-new-1');
 		expect(entry?.toolUseId).toBe('toolu_xyz');
 		expect(entry?.workspaceId).toBe('client');
+		expect(entry?.operation).toBe('git.status');
 		expect(entry?.policyScope).toBe('workspace');
 		expect(entry?.resolvedWorkspaceId).toBe('client');
 		expect(entry?.policyHash).toBe('abc123');

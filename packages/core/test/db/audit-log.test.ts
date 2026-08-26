@@ -107,6 +107,14 @@ describe('audit log > append', () => {
 // ── listRecent ───────────────────────────────────────────────
 
 describe('audit log > listRecent', () => {
+	test('filters persisted calls by canonical operation', () => {
+		store.append(makeCall({ tool: 'read', operation: 'filesystem.read', command: '/work/a' }), makeResult());
+		store.append(makeCall({ tool: 'write', operation: 'filesystem.write', command: '/work/b' }), makeResult());
+		expect(store.listRecentFiltered({ operation: 'filesystem.read' })).toEqual([
+			expect.objectContaining({ operation: 'filesystem.read', command: '/work/a' }),
+		]);
+	});
+
 	test('returns empty for fresh database', () => {
 		expect(store.listRecent()).toEqual([]);
 	});

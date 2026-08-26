@@ -59,6 +59,19 @@ describe('policy simulation', () => {
 		});
 	});
 
+	test('replays persisted trusted operation metadata through candidate selectors', () => {
+		const baseline = makeManifest({ policy: { default_unknown: 'block', approval_method: 'web' } });
+		const candidate = makeManifest({
+			policy: { default_unknown: 'block', approval_method: 'web' },
+			structuredRules: [{ id: 'host-reads', decision: 'allow', operations: ['filesystem.read'] }],
+		});
+		record(baseline, { tool: 'host_tool', operation: 'filesystem.read', command: '/work/file' });
+
+		const result = simulatePolicy(baseline, candidate, store);
+		expect(result.transitions).toEqual({ 'block->allow': 1 });
+		expect(result.policyChangeExamples[0]?.candidateMatchedRule).toBe('host-reads');
+	});
+
 	test('reports newly covered calls and selector-aware shadowed rules', () => {
 		const baseline = makeManifest({ policy: { default_unknown: 'approve', approval_method: 'web' } });
 		const candidate = makeManifest({

@@ -172,6 +172,7 @@ function parseAuditFilter(url: URL): AuditFilter {
 		project: optionalQueryParam(url, 'project'),
 		workspace: optionalQueryParam(url, 'workspace'),
 		tool: optionalQueryParam(url, 'tool'),
+		operation: optionalQueryParam(url, 'operation'),
 		classification: optionalQueryParam(url, 'classification') as AuditFilter['classification'],
 		decision: optionalQueryParam(url, 'decision') as AuditFilter['decision'],
 		search: optionalQueryParam(url, 'search'),

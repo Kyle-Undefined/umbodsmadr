@@ -50,6 +50,7 @@ function matchesSelectors(rule: StructuredRule | PolicyGuard, inputs: Evaluation
 		optionalSelectorMatches(rule.paths, (pattern) => matchesAnyPath(inputs.paths, [pattern])),
 		optionalSelectorMatches(rule.classifications, (candidate) => candidate === inputs.classification),
 		optionalSelectorMatches(rule.agents, (candidate) => candidate === inputs.call.agent),
+		optionalSelectorMatches(rule.operations, (candidate) => candidate === inputs.call.operation),
 	].every(Boolean);
 }
 

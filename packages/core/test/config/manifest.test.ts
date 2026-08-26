@@ -293,6 +293,7 @@ decision = "allow"
 tools = ["read", "grep"]
 paths = ["/work/repo/**"]
 classifications = ["readonly"]
+operations = ["filesystem.read"]
 reason = "normal repository read"
 
 [[guard]]
@@ -314,7 +315,11 @@ commands = ["git push --force *"]
 `);
 
 		const manifest = await loadManifest(path);
-		expect(manifest.structuredRules?.[0]).toMatchObject({ id: 'repository-reads', decision: 'allow' });
+		expect(manifest.structuredRules?.[0]).toMatchObject({
+			id: 'repository-reads',
+			decision: 'allow',
+			operations: ['filesystem.read'],
+		});
 		expect(manifest.guards?.[0]).toMatchObject({
 			id: 'credentials',
 			decision: 'block',
@@ -376,6 +381,23 @@ decision = "block"
 tools = ["write"]
 `);
 		await expect(loadManifest(duplicate)).rejects.toThrow('duplicated');
+	});
+
+	test('rejects malformed operation selectors', async () => {
+		const path = writeToml(`
+[env]
+name = "test"
+version = "1.0.0"
+timeout = 5
+[policy]
+default_unknown = "block"
+approval_method = "web"
+[[rule]]
+id = "bad-operation"
+decision = "allow"
+operations = ["Filesystem Read"]
+`);
+		await expect(loadManifest(path)).rejects.toThrow('invalid canonical operation');
 	});
 
 	test('rejects invalid structured regexes and identity collisions with legacy rules', async () => {

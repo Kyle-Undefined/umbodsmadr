@@ -90,6 +90,11 @@ describe('normalizePayload', () => {
 		expect(call.tool).toBe('bash');
 	});
 
+	test('derives canonical operations from adapter-owned tool normalization', () => {
+		const call = normalizePayload('test', { tool_name: 'Read', command: '/work/file' }, baseOptions);
+		expect(call.operation).toBe('filesystem.read');
+	});
+
 	test('timestamp is auto-generated', () => {
 		const call = normalizePayload('test', { tool_name: 'bash' }, baseOptions);
 		expect(call.timestamp).toBeDefined();

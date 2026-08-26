@@ -60,6 +60,15 @@ describe('engine > structured policy', () => {
 		expect(outside.matchedRule).toBeUndefined();
 	});
 
+	test('matches trusted canonical operation selectors', () => {
+		const result = new PolicyEngine(
+			makeManifest({
+				structuredRules: [{ id: 'host-read', decision: 'allow', operations: ['filesystem.read'] }],
+			})
+		).evaluate(makeCall({ tool: 'host_tool', operation: 'filesystem.read', command: '/work/file' }));
+		expect(result).toMatchObject({ decision: 'allow', matchedRule: 'host-read' });
+	});
+
 	test('global guards cannot be relaxed by workspace or legacy allows', () => {
 		const engine = new PolicyEngine(
 			makeManifest({

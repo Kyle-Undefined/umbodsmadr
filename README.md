@@ -54,6 +54,7 @@ decision = "allow"
 tools = ["read", "grep", "glob"]
 paths = ["/work/client-app/**"]
 classifications = ["readonly"]
+operations = ["filesystem.read"]
 reason = "normal repository read"
 
 [[workspaces]]
@@ -80,7 +81,7 @@ tools = ["edit", "write", "apply_patch"]
 paths = ["/work/client-app/**"]
 ```
 
-Legacy `[rules]` entries remain supported as wildcard patterns (`rm *`, `* --force`) or regex (`/^pattern$/flags`). Structured `[[rule]]` entries have stable IDs and may select `tools`, `commands`, `paths`, `classifications`, and `agents`. Selector kinds are ANDed; values within one selector are ORed. Structured rules run in manifest order before the legacy table in the same scope.
+Legacy `[rules]` entries remain supported as wildcard patterns (`rm *`, `* --force`) or regex (`/^pattern$/flags`). Structured `[[rule]]` entries have stable IDs and may select `tools`, `commands`, `paths`, `classifications`, `agents`, and trusted canonical `operations`. Selector kinds are ANDed; values within one selector are ORed. Structured rules run in manifest order before the legacy table in the same scope. Adapter-derived operations include `filesystem.read`, `filesystem.search`, `filesystem.edit`, `filesystem.write`, `network.fetch`, and `network.search`; embedded hosts may supply their own canonical dotted operation IDs. Public `/api/evaluate` callers cannot self-assert trusted operation metadata.
 
 `[[guard]]` and `[[workspaces.guard]]` entries are block-only invariants. Global guards run first and cannot be relaxed by workspace policy; workspace guards run next, followed by workspace rules, global rules, and classification defaults. Guards may omit `decision`; when present it must be `"block"`. A directory-wide `grep` or `glob` uses `default_unknown` instead of a permissive readonly default whenever a blocking hidden-path rule may apply, because the search may expose a protected target.
 

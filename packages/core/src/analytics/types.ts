@@ -12,6 +12,7 @@ export interface AuditFilter extends AnalyticsWindow {
 	/** Exact resolved workspace id match. */
 	workspace?: string;
 	tool?: string;
+	operation?: string;
 	classification?: CallClassification;
 	decision?: ApprovalDecision;
 	/** Case-insensitive command substring. */
@@ -22,6 +23,7 @@ export interface AuditEntrySummary {
 	id: number;
 	agent: string;
 	tool: string;
+	operation?: string;
 	command: string;
 	timestamp: string;
 	decision: ApprovalDecision;

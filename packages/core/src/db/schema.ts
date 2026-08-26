@@ -1,10 +1,11 @@
-export const SCHEMA_VERSION = 4;
+export const SCHEMA_VERSION = 5;
 
 export const SCHEMA = `
 CREATE TABLE IF NOT EXISTS audit_log (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   agent TEXT NOT NULL,
   tool TEXT NOT NULL,
+  operation TEXT,
   command TEXT NOT NULL,
   command_search TEXT,
 	  args_json TEXT,
@@ -132,4 +133,5 @@ export const MIGRATIONS: Record<number, MigrationStatement[]> = {
 		{ sql: 'ALTER TABLE audit_log ADD COLUMN policy_hash TEXT', addsColumn: 'policy_hash' },
 		{ sql: 'ALTER TABLE audit_log ADD COLUMN policy_generation INTEGER', addsColumn: 'policy_generation' },
 	],
+	5: [{ sql: 'ALTER TABLE audit_log ADD COLUMN operation TEXT', addsColumn: 'operation' }],
 };

@@ -10,6 +10,7 @@ import type {
 	WorkspaceConfig,
 } from '../core/types.ts';
 import { isAbsoluteWorkspaceRoot, normalizeWorkspaceRoot } from '../policy/workspace.ts';
+import { isCanonicalOperation } from '../policy/operations.ts';
 import { isRecord } from '../utils/guards.ts';
 import { errorMessage } from '../utils/errors.ts';
 
@@ -188,6 +189,10 @@ function normalizeStructuredEntries(raw: unknown, scope: string, guard: boolean)
 		}
 		const commands = normalizeStringList(value.commands, `${scope} "${id}".commands`);
 		const paths = normalizeStringList(value.paths, `${scope} "${id}".paths`);
+		const operations = normalizeStringList(value.operations, `${scope} "${id}".operations`);
+		if (operations?.some((operation) => !isCanonicalOperation(operation))) {
+			throw new Error(`manifest ${scope} "${id}".operations contains an invalid canonical operation`);
+		}
 		validateMatcherPatterns(commands, `${scope} "${id}".commands`);
 		validateMatcherPatterns(paths, `${scope} "${id}".paths`);
 		const entry = {
@@ -198,9 +203,17 @@ function normalizeStructuredEntries(raw: unknown, scope: string, guard: boolean)
 			paths,
 			classifications: classifications as CallClassification[] | undefined,
 			agents: normalizeStringList(value.agents, `${scope} "${id}".agents`),
+			operations,
 			reason: typeof value.reason === 'string' && value.reason.trim() ? value.reason.trim() : undefined,
 		};
-		if (!entry.tools && !entry.commands && !entry.paths && !entry.classifications && !entry.agents) {
+		if (
+			!entry.tools &&
+			!entry.commands &&
+			!entry.paths &&
+			!entry.classifications &&
+			!entry.agents &&
+			!entry.operations
+		) {
 			throw new Error(`manifest ${scope} "${id}" must define at least one selector`);
 		}
 		return entry;
