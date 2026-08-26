@@ -19,6 +19,9 @@ interface PolicyContext {
 	match?: CompiledPolicyMatch;
 	policyScope: 'global' | 'workspace';
 	effectiveDefault: ApprovalDecision;
+	defaultScope: 'global' | 'workspace';
+	defaultReason: string;
+	legacyReadonlyAutoAllow: boolean;
 }
 
 function resolvePolicyContext(
@@ -29,25 +32,65 @@ function resolvePolicyContext(
 ): PolicyContext {
 	const resolution = resolveWorkspace(manifest, call);
 	const globalGuard = compiled.matchGlobalGuard(call, classification);
-	if (globalGuard) return policyContext(resolution, globalGuard, 'global', manifest);
+	if (globalGuard) return policyContext(resolution, globalGuard, 'global', manifest, classification);
 	const workspaceGuard = compiled.matchWorkspaceGuard(resolution.workspace, call, classification);
-	if (workspaceGuard) return policyContext(resolution, workspaceGuard, 'workspace', manifest);
+	if (workspaceGuard) return policyContext(resolution, workspaceGuard, 'workspace', manifest, classification);
 	const workspaceMatch = compiled.matchWorkspaceRule(resolution.workspace, call, classification);
-	if (workspaceMatch) return policyContext(resolution, workspaceMatch, 'workspace', manifest);
-	return policyContext(resolution, compiled.matchGlobalRule(call, classification), 'global', manifest);
+	if (workspaceMatch) return policyContext(resolution, workspaceMatch, 'workspace', manifest, classification);
+	return policyContext(resolution, compiled.matchGlobalRule(call, classification), 'global', manifest, classification);
 }
 
 function policyContext(
 	resolution: WorkspaceResolution,
 	match: CompiledPolicyMatch | undefined,
 	policyScope: 'global' | 'workspace',
-	manifest: Manifest
+	manifest: Manifest,
+	classification: Classification
 ): PolicyContext {
+	const defaultResolution = resolveClassificationDefault(manifest, resolution, classification);
 	return {
 		resolution,
 		match,
 		policyScope,
-		effectiveDefault: resolution.workspace?.default_unknown ?? manifest.policy.default_unknown,
+		effectiveDefault: defaultResolution.decision,
+		defaultScope: defaultResolution.scope,
+		defaultReason: defaultResolution.reason,
+		legacyReadonlyAutoAllow:
+			classification === 'readonly' &&
+			manifest.policy.defaults === undefined &&
+			resolution.workspace?.defaults === undefined,
+	};
+}
+
+function resolveClassificationDefault(
+	manifest: Manifest,
+	resolution: WorkspaceResolution,
+	classification: Classification
+): { decision: ApprovalDecision; scope: 'global' | 'workspace'; reason: string } {
+	const workspace = resolution.workspace;
+	const workspaceDefault = workspace?.defaults?.[classification];
+	if (workspaceDefault) {
+		return {
+			decision: workspaceDefault,
+			scope: 'workspace',
+			reason: `workspace "${workspace.id}".defaults.${classification}=${workspaceDefault}`,
+		};
+	}
+	if (workspace?.default_unknown) {
+		return {
+			decision: workspace.default_unknown,
+			scope: 'workspace',
+			reason: `workspace "${workspace.id}".default_unknown=${workspace.default_unknown}`,
+		};
+	}
+	const globalDefault = manifest.policy.defaults?.[classification];
+	if (globalDefault) {
+		return { decision: globalDefault, scope: 'global', reason: `policy.defaults.${classification}=${globalDefault}` };
+	}
+	return {
+		decision: manifest.policy.default_unknown,
+		scope: 'global',
+		reason: `policy.default_unknown=${manifest.policy.default_unknown}`,
 	};
 }
 
@@ -72,22 +115,35 @@ function matchedRuleResult(context: PolicyContext, classification: Classificatio
 	};
 }
 
-function fallbackScope(context: PolicyContext): 'global' | 'workspace' {
-	return context.resolution.workspace?.default_unknown === undefined ? 'global' : 'workspace';
-}
-
 function fallbackResult(context: PolicyContext, classification: Classification): EvaluationResult {
-	const scope = fallbackScope(context);
 	const workspaceId = context.resolution.workspace?.id;
 	return {
 		decision: context.effectiveDefault,
 		classification,
-		policyScope: scope,
+		policyScope: context.defaultScope,
 		resolvedWorkspaceId: workspaceId,
-		reason:
-			scope === 'workspace'
-				? `no matching rule, fell back to workspace "${workspaceId}".default_unknown=${context.effectiveDefault}`
-				: `no matching rule, fell back to policy.default_unknown=${context.effectiveDefault}`,
+		reason: `no matching rule, fell back to ${context.defaultReason}`,
+	};
+}
+
+function sensitiveSearchFallback(
+	manifest: Manifest,
+	context: PolicyContext,
+	classification: Classification
+): EvaluationResult {
+	const workspace = context.resolution.workspace;
+	const decision = workspace?.default_unknown ?? manifest.policy.default_unknown;
+	const scope = workspace?.default_unknown === undefined ? 'global' : 'workspace';
+	const source =
+		scope === 'workspace'
+			? `workspace "${workspace?.id}".default_unknown=${decision}`
+			: `policy.default_unknown=${decision}`;
+	return {
+		decision,
+		classification,
+		policyScope: scope,
+		resolvedWorkspaceId: workspace?.id,
+		reason: `directory search may expose hidden files protected by block rules; fell back to ${source}`,
 	};
 }
 
@@ -136,13 +192,11 @@ function readonlyResult(
 		}
 		const probeMatch = hiddenProbeMatch(call, manifest, compiled, context, classification);
 		if (probeMatch && probeMatch[1] !== 'allow') {
-			return {
-				...fallbackResult(context, classification),
-				reason: 'directory search may expose hidden files protected by block rules',
-			};
+			return sensitiveSearchFallback(manifest, context, classification);
 		}
 	}
 
+	if (!context.legacyReadonlyAutoAllow) return fallbackResult(context, classification);
 	return {
 		decision: 'allow',
 		classification,

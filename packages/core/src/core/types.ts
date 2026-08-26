@@ -15,6 +15,8 @@ export interface EnvConfig {
 export interface PolicyConfig {
 	default_unknown: ApprovalDecision;
 	approval_method: ApprovalMethod;
+	/** Optional classification-specific defaults. Missing entries use default_unknown. */
+	defaults?: Partial<Record<CallClassification, ApprovalDecision>>;
 }
 
 export interface ServerConfig {
@@ -55,6 +57,8 @@ export interface WorkspaceConfig {
 	roots: string[];
 	/** Workspace-specific fallback; inherits policy.default_unknown when omitted. */
 	default_unknown?: ApprovalDecision;
+	/** Workspace classification defaults; missing entries inherit the workspace alias, then global defaults. */
+	defaults?: Partial<Record<CallClassification, ApprovalDecision>>;
 	rules: Record<string, ApprovalDecision>;
 	/** Ordered structured rules evaluated before this workspace's legacy rule table. */
 	structuredRules?: StructuredRule[];

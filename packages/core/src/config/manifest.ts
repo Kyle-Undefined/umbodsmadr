@@ -56,22 +56,50 @@ function isDecision(value: unknown): value is ApprovalDecision {
 	return value === 'allow' || value === 'block' || value === 'approve';
 }
 
-function normalizePolicy(raw: Record<string, unknown> | undefined): PolicyConfig {
-	const defaultUnknown = raw?.default_unknown;
-	const approvalMethod = raw?.approval_method;
-
-	if (!isDecision(defaultUnknown)) {
-		throw new Error('manifest policy.default_unknown must be allow, block, or approve');
+function normalizePolicyFallback(
+	raw: unknown,
+	defaults: Partial<Record<CallClassification, ApprovalDecision>> | undefined
+): ApprovalDecision {
+	if (raw !== undefined && !isDecision(raw)) {
+		throw new Error('manifest policy.default_unknown must be allow, block, or approve when provided');
 	}
+	if (raw === undefined && defaults?.unknown === undefined) {
+		throw new Error('manifest policy.default_unknown or policy.defaults.unknown is required');
+	}
+	return raw ?? (defaults?.unknown as ApprovalDecision);
+}
 
-	if (approvalMethod !== 'web' && approvalMethod !== 'cli' && approvalMethod !== 'both') {
+function normalizeApprovalMethod(raw: unknown): PolicyConfig['approval_method'] {
+	if (raw !== 'web' && raw !== 'cli' && raw !== 'both') {
 		throw new Error('manifest policy.approval_method must be web, cli, or both');
 	}
+	return raw;
+}
 
+function normalizePolicy(raw: Record<string, unknown> | undefined): PolicyConfig {
+	const defaults = normalizeClassificationDefaults(raw?.defaults, 'policy.defaults');
 	return {
-		default_unknown: defaultUnknown,
-		approval_method: approvalMethod,
+		default_unknown: normalizePolicyFallback(raw?.default_unknown, defaults),
+		approval_method: normalizeApprovalMethod(raw?.approval_method),
+		...(defaults ? { defaults } : {}),
 	};
+}
+
+function normalizeClassificationDefaults(
+	raw: unknown,
+	field: string
+): Partial<Record<CallClassification, ApprovalDecision>> | undefined {
+	if (raw === undefined) return undefined;
+	if (!isRecord(raw)) throw new Error(`manifest ${field} must be a table`);
+	const defaults: Partial<Record<CallClassification, ApprovalDecision>> = {};
+	for (const [classification, decision] of Object.entries(raw)) {
+		if (!CLASSIFICATIONS.has(classification as CallClassification)) {
+			throw new Error(`manifest ${field} contains unknown classification "${classification}"`);
+		}
+		if (!isDecision(decision)) throw new Error(`manifest ${field}.${classification} must be allow, block, or approve`);
+		defaults[classification as CallClassification] = decision;
+	}
+	return defaults;
 }
 
 function normalizeServer(raw: Record<string, unknown> | undefined): ServerConfig {
@@ -211,6 +239,7 @@ function normalizeWorkspaceEntry(entry: unknown, index: number, ids: Set<string>
 		throw new Error(`manifest workspace "${id}".rules must be a table`);
 	}
 	const legacyRules = normalizeRules(isRecord(entry.rules) ? entry.rules : undefined);
+	const defaults = normalizeClassificationDefaults(entry.defaults, `workspace "${id}".defaults`);
 	const structuredRules = normalizeStructuredEntries(entry.rule, `workspace "${id}".rule`, false);
 	const guards = normalizeStructuredEntries(entry.guard, `workspace "${id}".guard`, true);
 	const identities = [...structuredRules, ...guards].map((item) => item.id);
@@ -223,6 +252,7 @@ function normalizeWorkspaceEntry(entry: unknown, index: number, ids: Set<string>
 		id,
 		roots: normalizeWorkspaceRoots(entry.roots, id, roots),
 		default_unknown: defaultUnknown,
+		...(defaults ? { defaults } : {}),
 		rules: legacyRules,
 		...(structuredRules.length > 0 ? { structuredRules } : {}),
 		...(guards.length > 0 ? { guards } : {}),

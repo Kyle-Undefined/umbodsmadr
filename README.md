@@ -28,6 +28,13 @@ timeout = 30
 default_unknown = "block"
 approval_method = "web"  # or "cli" or "both"
 
+[policy.defaults]
+readonly = "allow"
+stateful = "approve"
+destructive = "approve"
+external = "approve"
+unknown = "block"
+
 [rules]
 "git log *" = "allow"
 "ls *" = "allow"
@@ -54,6 +61,10 @@ id = "client-production"
 roots = ["/work/client-app", "C:\\work\\client-app"]
 default_unknown = "block"
 
+[workspaces.defaults]
+readonly = "allow"
+stateful = "approve"
+
 [workspaces.rules]
 "git push *" = "block"
 "terraform plan *" = "approve"
@@ -71,7 +82,9 @@ paths = ["/work/client-app/**"]
 
 Legacy `[rules]` entries remain supported as wildcard patterns (`rm *`, `* --force`) or regex (`/^pattern$/flags`). Structured `[[rule]]` entries have stable IDs and may select `tools`, `commands`, `paths`, `classifications`, and `agents`. Selector kinds are ANDed; values within one selector are ORed. Structured rules run in manifest order before the legacy table in the same scope.
 
-`[[guard]]` and `[[workspaces.guard]]` entries are block-only invariants. Global guards run first and cannot be relaxed by workspace policy; workspace guards run next, followed by workspace rules, global rules, readonly handling, and `default_unknown`. Guards may omit `decision`; when present it must be `"block"`. A directory-wide `grep` or `glob` falls back instead of being auto-allowed whenever an applicable structured path guard exists, because the search may expose a protected target. Changing the manifest still requires a restart.
+`[[guard]]` and `[[workspaces.guard]]` entries are block-only invariants. Global guards run first and cannot be relaxed by workspace policy; workspace guards run next, followed by workspace rules, global rules, and classification defaults. Guards may omit `decision`; when present it must be `"block"`. A directory-wide `grep` or `glob` uses `default_unknown` instead of a permissive readonly default whenever a blocking hidden-path rule may apply, because the search may expose a protected target. Changing the manifest still requires a restart.
+
+`[policy.defaults]` provides fallbacks for `readonly`, `stateful`, `destructive`, `external`, and `unknown` calls. When the table is absent, legacy readonly auto-allow behavior is preserved. `policy.default_unknown` remains a compatibility fallback and may be omitted only when `policy.defaults.unknown` is set. Workspace defaults override matching classifications; a workspace `default_unknown` retains its legacy precedence for classifications omitted from that workspace table, followed by the global classification default and global `default_unknown`.
 
 The audit database lives next to the manifest as `umbod.envName.db`.
 
@@ -105,7 +118,7 @@ Resolution is deterministic:
 
 When an unknown ID resolves through cwd, Umbod records both the requested ID and the resolved workspace. If neither form of workspace identity resolves, Umbod fails closed instead of letting the call inherit global policy.
 
-Workspace rules run before global rules, so they can deliberately make a global decision stricter or more relaxed. If neither layer matches, the workspace's `default_unknown` is used when present, otherwise the global default applies. `approval_method` remains global because it controls how the Umbod service obtains approvals.
+Workspace rules run before global rules, so they can deliberately make a global decision stricter or more relaxed. If neither layer matches, Umbod uses the classification-specific and compatibility fallback order documented above. `approval_method` remains global because it controls how the Umbod service obtains approvals.
 
 Roots are optional. A host can use a purely conceptual workspace by sending its ID directly. Multiple absolute roots may be listed as aliases for native Windows, WSL, containers, or additional checkouts. Duplicate normalized roots are rejected, while nested roots are allowed and select the most specific workspace.
 

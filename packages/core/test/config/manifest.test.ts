@@ -145,6 +145,38 @@ approval_method = "web"
 		}
 	});
 
+	test('supports classification defaults with unknown as the compatibility fallback', async () => {
+		const path = writeToml(`
+[env]
+name = "test"
+version = "1.0.0"
+timeout = 5
+
+[policy]
+approval_method = "web"
+
+[policy.defaults]
+readonly = "allow"
+stateful = "approve"
+destructive = "block"
+external = "approve"
+unknown = "block"
+`);
+
+		const manifest = await loadManifest(path);
+		expect(manifest.policy).toEqual({
+			default_unknown: 'block',
+			approval_method: 'web',
+			defaults: {
+				readonly: 'allow',
+				stateful: 'approve',
+				destructive: 'block',
+				external: 'approve',
+				unknown: 'block',
+			},
+		});
+	});
+
 	test('server defaults when section omitted', async () => {
 		const path = writeToml(`
 [env]
@@ -221,6 +253,27 @@ id = "conceptual"
 				rules: { 'deploy *': 'approve' },
 			},
 		]);
+	});
+
+	test('workspace profiles support classification defaults', async () => {
+		const path = writeToml(`
+[env]
+name = "test"
+version = "1.0.0"
+timeout = 5
+[policy]
+default_unknown = "block"
+approval_method = "web"
+[[workspaces]]
+id = "repo"
+roots = ["/work/repo"]
+[workspaces.defaults]
+readonly = "approve"
+stateful = "allow"
+`);
+
+		const manifest = await loadManifest(path);
+		expect(manifest.workspaces?.[0]?.defaults).toEqual({ readonly: 'approve', stateful: 'allow' });
 	});
 
 	test('supports ordered structured rules and block-only guards', async () => {
@@ -415,6 +468,46 @@ approval_method = "web"
 `);
 
 		await expect(loadManifest(path)).rejects.toThrow('default_unknown');
+	});
+
+	test('requires an unknown fallback and validates classification defaults', async () => {
+		const missingFallback = writeToml(`
+[env]
+name = "test"
+version = "1.0.0"
+timeout = 5
+[policy]
+approval_method = "web"
+[policy.defaults]
+readonly = "allow"
+`);
+		await expect(loadManifest(missingFallback)).rejects.toThrow('defaults.unknown is required');
+
+		const unknownClassification = writeToml(`
+[env]
+name = "test"
+version = "1.0.0"
+timeout = 5
+[policy]
+default_unknown = "block"
+approval_method = "web"
+[policy.defaults]
+safe = "allow"
+`);
+		await expect(loadManifest(unknownClassification)).rejects.toThrow('unknown classification "safe"');
+
+		const invalidDecision = writeToml(`
+[env]
+name = "test"
+version = "1.0.0"
+timeout = 5
+[policy]
+default_unknown = "block"
+approval_method = "web"
+[policy.defaults]
+readonly = "ask"
+`);
+		await expect(loadManifest(invalidDecision)).rejects.toThrow('defaults.readonly');
 	});
 
 	test('invalid approval_method value', async () => {

@@ -227,6 +227,92 @@ describe('engine > readonly auto-allow', () => {
 	});
 });
 
+describe('engine > classification defaults', () => {
+	test('uses classification defaults and removes unconditional readonly auto-allow', () => {
+		const engine = new PolicyEngine(
+			makeManifest({
+				policy: {
+					default_unknown: 'block',
+					approval_method: 'web',
+					defaults: { readonly: 'approve', stateful: 'allow', destructive: 'block', external: 'approve' },
+				},
+			})
+		);
+
+		expect(engine.evaluate(makeCall({ command: 'git status' }))).toMatchObject({
+			decision: 'approve',
+			classification: 'readonly',
+			policyScope: 'global',
+		});
+		expect(engine.evaluate(makeCall({ command: 'cargo build' })).decision).toBe('allow');
+		expect(engine.evaluate(makeCall({ command: 'rm -rf /tmp/cache' })).decision).toBe('block');
+		expect(engine.evaluate(makeCall({ command: 'curl https://example.com' })).decision).toBe('approve');
+		expect(engine.evaluate(makeCall({ tool: 'SomethingNew', command: 'test' })).decision).toBe('block');
+	});
+
+	test('workspace defaults override aliases while missing entries preserve compatibility precedence', () => {
+		const engine = new PolicyEngine(
+			makeManifest({
+				policy: {
+					default_unknown: 'block',
+					approval_method: 'web',
+					defaults: { readonly: 'block', stateful: 'approve' },
+				},
+				workspaces: [
+					{
+						id: 'legacy',
+						roots: ['/work/legacy'],
+						default_unknown: 'allow',
+						defaults: { readonly: 'approve' },
+						rules: {},
+					},
+					{ id: 'inherited', roots: ['/work/inherited'], rules: {} },
+				],
+			})
+		);
+
+		expect(engine.evaluate(makeCall({ workspaceId: 'legacy', command: 'git status' }))).toMatchObject({
+			decision: 'approve',
+			policyScope: 'workspace',
+		});
+		expect(engine.evaluate(makeCall({ workspaceId: 'legacy', command: 'cargo build' }))).toMatchObject({
+			decision: 'allow',
+			policyScope: 'workspace',
+		});
+		expect(engine.evaluate(makeCall({ workspaceId: 'inherited', command: 'cargo build' }))).toMatchObject({
+			decision: 'approve',
+			policyScope: 'global',
+		});
+	});
+
+	test('guards still win over permissive readonly defaults', () => {
+		const result = new PolicyEngine(
+			makeManifest({
+				policy: { default_unknown: 'block', approval_method: 'web', defaults: { readonly: 'allow' } },
+				guards: [{ id: 'credentials', decision: 'block', paths: ['**/.env'] }],
+			})
+		).evaluate(makeCall({ tool: 'Read', command: '/work/.env', inputs: { file_path: '/work/.env' } }));
+
+		expect(result).toMatchObject({ decision: 'block', matchedRule: 'credentials' });
+	});
+
+	test('protected directory searches bypass permissive readonly defaults', () => {
+		const result = new PolicyEngine(
+			makeManifest({
+				policy: {
+					default_unknown: 'approve',
+					approval_method: 'web',
+					defaults: { readonly: 'allow' },
+				},
+				guards: [{ id: 'credentials', decision: 'block', paths: ['**/.env'] }],
+			})
+		).evaluate(makeCall({ tool: 'grep', command: '/work/repo' }));
+
+		expect(result).toMatchObject({ decision: 'approve', classification: 'readonly', policyScope: 'global' });
+		expect(result.reason).toContain('policy.default_unknown=approve');
+	});
+});
+
 // ── Grep/glob hidden file protection ─────────────────────────
 
 describe('engine > hidden file protection', () => {
