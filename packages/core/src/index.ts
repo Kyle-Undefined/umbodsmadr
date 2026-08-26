@@ -21,8 +21,10 @@ export {
 } from './policy/workspace.ts';
 export type { WorkspaceResolution, WorkspaceResolutionSource } from './policy/workspace.ts';
 export { classifyToolCall } from './policy/classifier.ts';
-export { createDefaultManifestSource, loadManifest } from './config/manifest.ts';
+export { createDefaultManifestSource, loadManifest, parseManifestSource } from './config/manifest.ts';
 export type { DefaultManifestOptions } from './config/manifest.ts';
+export { PolicyManager } from './policy/policy-manager.ts';
+export type { PolicyEvaluation, PolicyReloadStatus, PolicyStatus } from './policy/policy-manager.ts';
 export { runConfigureCommand } from './configure.ts';
 export { adapters, findAdapterById, selectAdapters } from './adapters/index.ts';
 export type { HookAdapter, HookInstallOptions, HookInstallResult } from './adapters/base.ts';

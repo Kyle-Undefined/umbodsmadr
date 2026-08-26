@@ -82,11 +82,13 @@ paths = ["/work/client-app/**"]
 
 Legacy `[rules]` entries remain supported as wildcard patterns (`rm *`, `* --force`) or regex (`/^pattern$/flags`). Structured `[[rule]]` entries have stable IDs and may select `tools`, `commands`, `paths`, `classifications`, and `agents`. Selector kinds are ANDed; values within one selector are ORed. Structured rules run in manifest order before the legacy table in the same scope.
 
-`[[guard]]` and `[[workspaces.guard]]` entries are block-only invariants. Global guards run first and cannot be relaxed by workspace policy; workspace guards run next, followed by workspace rules, global rules, and classification defaults. Guards may omit `decision`; when present it must be `"block"`. A directory-wide `grep` or `glob` uses `default_unknown` instead of a permissive readonly default whenever a blocking hidden-path rule may apply, because the search may expose a protected target. Changing the manifest still requires a restart.
+`[[guard]]` and `[[workspaces.guard]]` entries are block-only invariants. Global guards run first and cannot be relaxed by workspace policy; workspace guards run next, followed by workspace rules, global rules, and classification defaults. Guards may omit `decision`; when present it must be `"block"`. A directory-wide `grep` or `glob` uses `default_unknown` instead of a permissive readonly default whenever a blocking hidden-path rule may apply, because the search may expose a protected target.
 
 `[policy.defaults]` provides fallbacks for `readonly`, `stateful`, `destructive`, `external`, and `unknown` calls. When the table is absent, legacy readonly auto-allow behavior is preserved. `policy.default_unknown` remains a compatibility fallback and may be omitted only when `policy.defaults.unknown` is set. Workspace defaults override matching classifications; a workspace `default_unknown` retains its legacy precedence for classifications omitted from that workspace table, followed by the global classification default and global `default_unknown`.
 
 The audit database lives next to the manifest as `umbod.envName.db`.
+
+While `umbod start` is running, saved manifest changes are reloaded automatically. Umbod reads, parses, validates, and compiles the complete candidate before atomically activating it. A failed reload retains the previous policy. `/health` and `/api/manifest` expose `sourceHash`, `activeHash`, `loadedAt`, `generation`, and reload status, and each new audit row records the active policy hash and generation that produced its decision.
 
 ### policy simulation
 

@@ -1,10 +1,11 @@
-import { defaultDatabasePath, loadManifest, logger, resolveEnvPath, type StartOptions } from '@umbod/core';
+import { defaultDatabasePath, logger, PolicyManager, resolveEnvPath, type StartOptions } from '@umbod/core';
 
 import { startHttpServer } from '../server/serve.ts';
 
 export async function runStartCommand(options: StartOptions): Promise<void> {
 	const manifestPath = resolveEnvPath(options.envPath);
-	const manifest = await loadManifest(manifestPath);
+	const policyManager = await PolicyManager.load(manifestPath);
+	const manifest = policyManager.manifest;
 	const host = options.host ?? manifest.server.host;
 	const port = options.port ?? manifest.server.port;
 	const approvalTimeoutMs = manifest.env.timeout * 1000;
@@ -13,6 +14,8 @@ export async function runStartCommand(options: StartOptions): Promise<void> {
 		host,
 		port,
 		manifest,
+		policyManager,
+		manifestPath,
 		dbPath: defaultDatabasePath(manifestPath, manifest.env.name),
 		approvalTimeoutMs,
 	});

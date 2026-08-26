@@ -14,7 +14,7 @@ import type {
 } from '../core/types.ts';
 import { AuditLogStore, type AuditLogStoreOptions } from '../db/audit-log.ts';
 import { toPermissionDecision } from '../hooks/adapter-utils.ts';
-import { PolicyEngine } from '../policy/engine.ts';
+import { PolicyManager, type PolicyStatus } from '../policy/policy-manager.ts';
 import { resolveTimeParam } from '../utils/duration.ts';
 import { errorMessage } from '../utils/errors.ts';
 import { logger } from '../utils/logger.ts';
@@ -45,6 +45,8 @@ export interface AuthorizationResult {
 
 export interface UmbodOptions {
 	manifest: Manifest;
+	/** Reloadable policy owner. When omitted, Umbod creates a static generation from manifest. */
+	policyManager?: PolicyManager;
 	/** Path to the SQLite audit database. Required unless auditLog is provided. */
 	dbPath?: string;
 	/** Preconstructed store; takes precedence over dbPath. */
@@ -63,6 +65,7 @@ export interface UmbodOptions {
 
 export interface Umbod {
 	readonly manifest: Manifest;
+	readonly policyStatus: PolicyStatus;
 	readonly auditLog: AuditLogStore;
 	evaluate(call: ToolCall): EvaluationResult;
 	/** Evaluate, audit, and fully resolve a tool call for an in-process host. */
@@ -72,6 +75,7 @@ export interface Umbod {
 	listPendingApprovals(): ReturnType<AuditLogStore['listPendingApprovals']>;
 	/** Compute tool and rule reports against one consistent audit snapshot. */
 	analyticsSnapshot(options?: AnalyticsSnapshotQuery): ReturnType<typeof computeAnalyticsSnapshot>;
+	reloadPolicy(manifestPath: string): Promise<PolicyStatus>;
 	/**
 	 * Handles umbod API routes (/health, /api/*). Returns undefined for
 	 * anything else so callers can mount their own routes around it.
@@ -176,8 +180,8 @@ function parseAuditFilter(url: URL): AuditFilter {
 
 export function createUmbod(options: UmbodOptions): Umbod {
 	const { manifest, onActivity, approvalPrompt } = options;
-	const approvalMethod = manifest.policy.approval_method;
-	const approvalTimeoutMs = options.approvalTimeoutMs ?? manifest.env.timeout * 1000;
+	const policyManager = options.policyManager ?? new PolicyManager(manifest);
+	const configuredApprovalTimeoutMs = options.approvalTimeoutMs;
 	const sessionLogSources = options.sessionLogSources ?? [{ agent: 'claude' }, { agent: 'codex' }];
 
 	if (!options.auditLog && options.dbPath === undefined) {
@@ -185,11 +189,11 @@ export function createUmbod(options: UmbodOptions): Umbod {
 	}
 
 	const auditLog = options.auditLog ?? new AuditLogStore(options.dbPath as string, options.auditLogOptions);
-	const engine = new PolicyEngine(manifest);
 
-	function publishEntry(call: ToolCall, result: EvaluationResult): ActivityEntry {
-		const { entryId, approvalRequestId } = auditLog.append(call, result);
-		const entry: ActivityEntry = { id: entryId, ...call, ...result, approvalRequestId };
+	function publishEntry(call: ToolCall, result: EvaluationResult, status: PolicyStatus): ActivityEntry {
+		const provenance = { policyHash: status.activeHash, policyGeneration: status.generation };
+		const { entryId, approvalRequestId } = auditLog.append(call, result, provenance);
+		const entry: ActivityEntry = { id: entryId, ...call, ...result, ...provenance, approvalRequestId };
 
 		try {
 			onActivity?.(entry);
@@ -200,7 +204,10 @@ export function createUmbod(options: UmbodOptions): Umbod {
 		return entry;
 	}
 
-	async function waitForApprovalResolution(approvalRequestId: number): Promise<ApprovalDecision> {
+	async function waitForApprovalResolution(
+		approvalRequestId: number,
+		approvalTimeoutMs: number
+	): Promise<ApprovalDecision> {
 		const deadline = approvalTimeoutMs === 0 ? undefined : Date.now() + approvalTimeoutMs;
 
 		for (;;) {
@@ -231,7 +238,9 @@ export function createUmbod(options: UmbodOptions): Umbod {
 	async function resolveApprovalDecision(
 		approvalRequestId: number,
 		call: ToolCall,
-		reason: string
+		reason: string,
+		approvalMethod: Manifest['policy']['approval_method'],
+		approvalTimeoutMs: number
 	): Promise<ApprovalDecision> {
 		if (approvalPrompt && approvalMethod === 'cli') {
 			// Prompt only: resolve the DB record directly from the prompt's answer
@@ -252,16 +261,17 @@ export function createUmbod(options: UmbodOptions): Umbod {
 						error: errorMessage(error),
 					});
 				});
-			return waitForApprovalResolution(approvalRequestId);
+			return waitForApprovalResolution(approvalRequestId, approvalTimeoutMs);
 		}
 
 		// "web" (or no prompt wired up): wait for the DB record to be resolved externally
-		return waitForApprovalResolution(approvalRequestId);
+		return waitForApprovalResolution(approvalRequestId, approvalTimeoutMs);
 	}
 
 	async function authorize(call: ToolCall, callOptions: AuthorizeOptions = {}): Promise<AuthorizationResult> {
-		const result = engine.evaluate(call);
-		const entry = publishEntry(call, result);
+		const evaluation = policyManager.evaluate(call);
+		const result = evaluation.result;
+		const entry = publishEntry(call, result, evaluation.status);
 		let decision: Exclude<ApprovalDecision, 'approve'>;
 
 		if (result.decision !== 'approve') {
@@ -276,7 +286,13 @@ export function createUmbod(options: UmbodOptions): Umbod {
 			auditLog.resolveApprovalRequest(entry.approvalRequestId, decisionToApprovalStatus(prompted));
 			decision = prompted === 'allow' ? 'allow' : 'block';
 		} else {
-			const resolved = await resolveApprovalDecision(entry.approvalRequestId, call, result.reason);
+			const resolved = await resolveApprovalDecision(
+				entry.approvalRequestId,
+				call,
+				result.reason,
+				evaluation.manifest.policy.approval_method,
+				configuredApprovalTimeoutMs ?? evaluation.manifest.env.timeout * 1000
+			);
 			decision = resolved === 'allow' ? 'allow' : 'block';
 		}
 
@@ -288,24 +304,27 @@ export function createUmbod(options: UmbodOptions): Umbod {
 	function handleHealth(): Response {
 		return Response.json({
 			status: 'ok',
-			environment: manifest.env.name,
-			version: manifest.env.version,
+			environment: policyManager.manifest.env.name,
+			version: policyManager.manifest.env.version,
+			policy: policyManager.status(),
 		});
 	}
 
 	function handleManifest(): Response {
+		const activeManifest = policyManager.manifest;
 		return Response.json({
-			env: manifest.env,
-			policy: manifest.policy,
-			rules: manifest.rules,
-			structuredRules: manifest.structuredRules ?? [],
-			guards: manifest.guards ?? [],
-			workspaces: manifest.workspaces ?? [],
+			env: activeManifest.env,
+			policy: activeManifest.policy,
+			rules: activeManifest.rules,
+			structuredRules: activeManifest.structuredRules ?? [],
+			guards: activeManifest.guards ?? [],
+			workspaces: activeManifest.workspaces ?? [],
+			policyStatus: policyManager.status(),
 		});
 	}
 
 	function listPendingApprovals(): ReturnType<AuditLogStore['listPendingApprovals']> {
-		return approvalMethod === 'cli' ? [] : auditLog.listPendingApprovals();
+		return policyManager.manifest.policy.approval_method === 'cli' ? [] : auditLog.listPendingApprovals();
 	}
 
 	function handleApprovalAction(approvalId: number, action: string): Response {
@@ -324,8 +343,8 @@ export function createUmbod(options: UmbodOptions): Umbod {
 			.json()
 			.then((call) => {
 				const input = parseEvaluatePayload(call);
-				const result = engine.evaluate(input);
-				const entry = publishEntry(input, result);
+				const evaluation = policyManager.evaluate(input);
+				const entry = publishEntry(input, evaluation.result, evaluation.status);
 
 				return Response.json({ ok: true, entry });
 			})
@@ -351,12 +370,19 @@ export function createUmbod(options: UmbodOptions): Umbod {
 		try {
 			const payload = await req.json();
 			const call = adapter.normalizePayload(payload);
-			const result = engine.evaluate(call);
-			const entry = publishEntry(call, result);
+			const evaluation = policyManager.evaluate(call);
+			const result = evaluation.result;
+			const entry = publishEntry(call, result, evaluation.status);
 			let finalDecision = result.decision;
 
 			if (result.decision === 'approve' && entry.approvalRequestId) {
-				finalDecision = await resolveApprovalDecision(entry.approvalRequestId, call, result.reason);
+				finalDecision = await resolveApprovalDecision(
+					entry.approvalRequestId,
+					call,
+					result.reason,
+					evaluation.manifest.policy.approval_method,
+					configuredApprovalTimeoutMs ?? evaluation.manifest.env.timeout * 1000
+				);
 			}
 
 			const body = {
@@ -501,6 +527,10 @@ export function createUmbod(options: UmbodOptions): Umbod {
 			return handleManifest();
 		}
 
+		if (url.pathname === '/api/policy/status') {
+			return Response.json(policyManager.status());
+		}
+
 		return handleAnalytics(url);
 	}
 
@@ -529,13 +559,19 @@ export function createUmbod(options: UmbodOptions): Umbod {
 	}
 
 	return {
-		manifest,
+		get manifest() {
+			return policyManager.manifest;
+		},
+		get policyStatus() {
+			return policyManager.status();
+		},
 		auditLog,
-		evaluate: (call) => engine.evaluate(call),
+		evaluate: (call) => policyManager.evaluate(call).result,
 		authorize,
 		resolveApproval: (approvalRequestId, status) => auditLog.resolveApprovalRequest(approvalRequestId, status),
 		listPendingApprovals,
-		analyticsSnapshot: (snapshotOptions) => computeAnalyticsSnapshot(auditLog, manifest, snapshotOptions),
+		analyticsSnapshot: (snapshotOptions) => computeAnalyticsSnapshot(auditLog, policyManager.manifest, snapshotOptions),
+		reloadPolicy: (manifestPath) => policyManager.reload(manifestPath),
 		fetch: handleFetch,
 		close: () => auditLog.close(),
 	};

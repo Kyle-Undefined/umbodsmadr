@@ -64,6 +64,8 @@ describe('HTTP > GET', () => {
 		expect(body.status).toBe('ok');
 		expect(body.environment).toBe('test');
 		expect(body.version).toBe('1.0.0');
+		expect(body.policy).toMatchObject({ generation: 1, reloadStatus: 'active' });
+		expect(body.policy.sourceHash).toBe(body.policy.activeHash);
 	});
 
 	test('GET /api/manifest returns public manifest', async () => {
@@ -74,6 +76,16 @@ describe('HTTP > GET', () => {
 		expect(body.policy.default_unknown).toBe('block');
 		expect(body.rules).toBeDefined();
 		expect(body.workspaces).toEqual([]);
+		expect(body.policyStatus).toMatchObject({ generation: 1, reloadStatus: 'active' });
+	});
+
+	test('GET /api/policy/status returns active reload metadata', async () => {
+		const res = await fetch(`${baseUrl}/api/policy/status`);
+		expect(res.status).toBe(200);
+		const body = await res.json();
+		expect(body).toMatchObject({ generation: 1, reloadStatus: 'active' });
+		expect(body.sourceHash).toBe(body.activeHash);
+		expect(Date.parse(body.loadedAt)).not.toBeNaN();
 	});
 
 	test('GET /api/activity returns array', async () => {

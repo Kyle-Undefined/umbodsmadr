@@ -34,7 +34,12 @@ describe('in-process authorization', () => {
 		const umbod = makeUmbod({ 'git push *': 'block' });
 		const result = await umbod.authorize(call);
 		expect(result.decision).toBe('block');
-		expect(umbod.auditLog.listRecent(1)[0]).toMatchObject({ sessionId: 'session-1', toolUseId: 'tool-1' });
+		expect(umbod.auditLog.listRecent(1)[0]).toMatchObject({
+			sessionId: 'session-1',
+			toolUseId: 'tool-1',
+			policyHash: umbod.policyStatus.activeHash,
+			policyGeneration: 1,
+		});
 		umbod.close();
 	});
 

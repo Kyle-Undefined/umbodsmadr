@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;
 
 export const SCHEMA = `
 CREATE TABLE IF NOT EXISTS audit_log (
@@ -19,7 +19,9 @@ CREATE TABLE IF NOT EXISTS audit_log (
 	  resolved_workspace_id TEXT,
 	  reason TEXT NOT NULL,
   session_id TEXT,
-  tool_use_id TEXT
+  tool_use_id TEXT,
+  policy_hash TEXT,
+  policy_generation INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS approval_requests (
@@ -126,4 +128,8 @@ export const MIGRATIONS: Record<number, MigrationStatement[]> = {
 		{ sql: `UPDATE audit_log SET policy_scope = 'global' WHERE policy_scope IS NULL` },
 	],
 	3: [{ sql: 'ALTER TABLE audit_log ADD COLUMN command_search TEXT', addsColumn: 'command_search' }],
+	4: [
+		{ sql: 'ALTER TABLE audit_log ADD COLUMN policy_hash TEXT', addsColumn: 'policy_hash' },
+		{ sql: 'ALTER TABLE audit_log ADD COLUMN policy_generation INTEGER', addsColumn: 'policy_generation' },
+	],
 };

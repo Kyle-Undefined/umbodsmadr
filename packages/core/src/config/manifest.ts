@@ -276,12 +276,15 @@ export async function loadManifest(manifestPath: string): Promise<Manifest> {
 		throw new Error(`failed to read manifest at ${manifestPath}: ${errorMessage(error)}`);
 	}
 
-	let parsed: Record<string, unknown>;
+	return parseManifestSource(source, manifestPath);
+}
 
+export function parseManifestSource(source: string, sourceLabel = 'manifest'): Manifest {
+	let parsed: Record<string, unknown>;
 	try {
 		parsed = Bun.TOML.parse(source) as Record<string, unknown>;
 	} catch (error) {
-		throw new Error(`failed to parse manifest at ${manifestPath}: ${errorMessage(error)}`);
+		throw new Error(`failed to parse manifest at ${sourceLabel}: ${errorMessage(error)}`);
 	}
 
 	const env = isRecord(parsed.env) ? parsed.env : undefined;

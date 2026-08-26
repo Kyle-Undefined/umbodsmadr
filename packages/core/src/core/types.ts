@@ -104,6 +104,8 @@ export interface EvaluationResult {
 
 export interface AuditEntry extends ToolCall, EvaluationResult {
 	id?: number;
+	policyHash?: string;
+	policyGeneration?: number;
 	approvalStatus?: ApprovalStatus;
 	approvalResolvedAt?: string;
 }

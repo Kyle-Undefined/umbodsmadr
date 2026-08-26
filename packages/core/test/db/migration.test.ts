@@ -143,6 +143,8 @@ describe('audit log > migration', () => {
 		expect(columns.has('policy_scope')).toBe(true);
 		expect(columns.has('resolved_workspace_id')).toBe(true);
 		expect(columns.has('command_search')).toBe(true);
+		expect(columns.has('policy_hash')).toBe(true);
+		expect(columns.has('policy_generation')).toBe(true);
 		const indexes = indexNames(dbPath);
 		expect(indexes.has('audit_log_workspace_timestamp_idx')).toBe(true);
 		expect(indexes.has('audit_log_approval_hotspot_idx')).toBe(true);
@@ -232,7 +234,7 @@ describe('audit log > migration', () => {
 		expect(entries).toHaveLength(2);
 	});
 
-	test('append stores sessionId and toolUseId columns', () => {
+	test('append stores session, workspace, and policy provenance columns', () => {
 		const store = new AuditLogStore(dbPath);
 		store.append(
 			{
@@ -250,7 +252,8 @@ describe('audit log > migration', () => {
 				policyScope: 'workspace',
 				resolvedWorkspaceId: 'client',
 				reason: 'auto-allowed readonly tool call',
-			}
+			},
+			{ policyHash: 'abc123', policyGeneration: 7 }
 		);
 		const [entry] = store.listRecent(1);
 		store.close();
@@ -260,5 +263,7 @@ describe('audit log > migration', () => {
 		expect(entry?.workspaceId).toBe('client');
 		expect(entry?.policyScope).toBe('workspace');
 		expect(entry?.resolvedWorkspaceId).toBe('client');
+		expect(entry?.policyHash).toBe('abc123');
+		expect(entry?.policyGeneration).toBe(7);
 	});
 });

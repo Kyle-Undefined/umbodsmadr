@@ -1,6 +1,8 @@
 import type { Server, ServerWebSocket } from 'bun';
+import { watch, type FSWatcher } from 'node:fs';
+import { basename, dirname } from 'node:path';
 
-import { createUmbod, logger, type Manifest, type Umbod } from '@umbod/core';
+import { createUmbod, logger, type Manifest, type PolicyManager, type Umbod } from '@umbod/core';
 
 import { CliApprovalQueue } from './cli-approval.ts';
 import { renderDashboard } from './ui.ts';
@@ -10,6 +12,8 @@ export interface ServeOptions {
 	host: string;
 	port: number;
 	manifest: Manifest;
+	policyManager?: PolicyManager;
+	manifestPath?: string;
 	dbPath: string;
 	approvalTimeoutMs: number;
 }
@@ -69,19 +73,39 @@ function handleServerFetch(
 export interface ServeHandle {
 	server: Server<undefined>;
 	umbod: Umbod;
+	policyWatcher?: FSWatcher;
+}
+
+function watchPolicy(umbod: Umbod, manifestPath: string | undefined): FSWatcher | undefined {
+	if (manifestPath === undefined) return undefined;
+	let reloadTimer: ReturnType<typeof setTimeout> | undefined;
+	const manifestName = basename(manifestPath);
+	return watch(dirname(manifestPath), (_event, changedPath) => {
+		if (changedPath !== null && changedPath !== manifestName) return;
+		if (reloadTimer !== undefined) clearTimeout(reloadTimer);
+		reloadTimer = setTimeout(() => {
+			void umbod.reloadPolicy(manifestPath).then((status) => {
+				if (status.reloadStatus === 'active') {
+					logger.info('policy reloaded', { generation: status.generation, activeHash: status.activeHash });
+				} else {
+					logger.warn('policy reload failed; retaining previous policy', { error: status.reloadError });
+				}
+			});
+		}, 100);
+	});
 }
 
 export async function startHttpServer(options: ServeOptions): Promise<ServeHandle> {
 	const sockets = new Set<ActivitySocket>();
-	const approvalMethod = options.manifest.policy.approval_method;
-	const cliApprovalQueue = approvalMethod !== 'web' ? new CliApprovalQueue() : null;
+	const cliApprovalQueue = new CliApprovalQueue();
 
 	const umbod = createUmbod({
 		manifest: options.manifest,
+		policyManager: options.policyManager,
 		dbPath: options.dbPath,
 		auditLogOptions: { journalMode: 'wal' },
 		approvalTimeoutMs: options.approvalTimeoutMs,
-		approvalPrompt: cliApprovalQueue ? (call, reason) => cliApprovalQueue.request(call, reason) : undefined,
+		approvalPrompt: (call, reason) => cliApprovalQueue.request(call, reason),
 		onActivity(entry) {
 			const message = JSON.stringify(entry);
 			for (const socket of sockets) {
@@ -112,5 +136,5 @@ export async function startHttpServer(options: ServeOptions): Promise<ServeHandl
 	});
 
 	logger.info(`server listening on http://${server.hostname}:${server.port}`);
-	return { server, umbod };
+	return { server, umbod, policyWatcher: watchPolicy(umbod, options.manifestPath) };
 }
