@@ -105,3 +105,25 @@ test('policy simulate command uses a read-only database and returns failed safet
 		expect(invalid.stderr.toString()).toContain('umbod failed');
 	}
 });
+
+test('policy test command runs embedded manifest fixtures and fails on mismatches', () => {
+	const path = join(tempDir, 'tested.toml');
+	writeFileSync(
+		path,
+		`${manifestSource('block')}
+[[test]]
+id = "expected-block"
+call = { agent = "test", tool = "bash", command = "cargo build" }
+expect = "block"
+[[test]]
+id = "unexpected-allow"
+call = { agent = "test", tool = "bash", command = "cargo build" }
+expect = "allow"
+`
+	);
+	const cli = Bun.spawnSync([process.execPath, 'run', 'packages/cli/src/cli.ts', 'policy', 'test', path]);
+	expect(cli.exitCode).toBe(2);
+	expect(cli.stdout.toString()).toContain('pass expected-block');
+	expect(cli.stdout.toString()).toContain('FAIL unexpected-allow');
+	expect(cli.stdout.toString()).toContain('1 passed, 1 failed');
+});

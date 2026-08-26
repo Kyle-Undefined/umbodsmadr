@@ -56,6 +56,9 @@ paths = ["/work/client-app/**"]
 classifications = ["readonly"]
 operations = ["filesystem.read"]
 reason = "normal repository read"
+mode = "enforce" # or "warn" / "observe"
+expires_at = "2030-01-01T00:00:00Z"
+max_uses = 20
 
 [[workspaces]]
 id = "client-production"
@@ -85,6 +88,8 @@ Legacy `[rules]` entries remain supported as wildcard patterns (`rm *`, `* --for
 
 `[[guard]]` and `[[workspaces.guard]]` entries are block-only invariants. Global guards run first and cannot be relaxed by workspace policy; workspace guards run next, followed by workspace rules, global rules, and classification defaults. Guards may omit `decision`; when present it must be `"block"`. A directory-wide `grep` or `glob` uses `default_unknown` instead of a permissive readonly default whenever a blocking hidden-path rule may apply, because the search may expose a protected target.
 
+Structured rules and guards default to `mode = "enforce"`. `warn` enforces the decision while marking the result and reason as a warning; `observe` appears in policy traces without affecting the decision. `expires_at` removes a rule from consideration at that instant. `max_uses` limits enforcement within one active compiled policy generation; unchanged saves keep the counter, while a real activation or process restart begins a new generation.
+
 `[policy.defaults]` provides fallbacks for `readonly`, `stateful`, `destructive`, `external`, and `unknown` calls. When the table is absent, legacy readonly auto-allow behavior is preserved. `policy.default_unknown` remains a compatibility fallback and may be omitted only when `policy.defaults.unknown` is set. Workspace defaults override matching classifications; a workspace `default_unknown` retains its legacy precedence for classifications omitted from that workspace table, followed by the global classification default and global `default_unknown`.
 
 The audit database lives next to the manifest as `umbod.envName.db`.
@@ -107,6 +112,17 @@ umbod policy simulate ./candidate.toml \
 ```
 
 Use `--all` for an explicitly unbounded replay, `--database` to select a different audit database, and `--json` for the complete report. Available failure checks are `blocked-to-allow`, `approve-to-allow`, `previously-denied-to-allow`, `unresolved-workspace`, and `truncated`. Stored historical outcomes, freshly replayed baseline decisions, and candidate decisions remain separate in the report.
+
+Manifests may carry executable policy fixtures:
+
+```toml
+[[test]]
+id = "status-is-readable"
+call = { agent = "fixture", tool = "bash", command = "git status" }
+expect = "allow"
+```
+
+Run them with `umbod policy test ./umbod.toml`; any mismatch exits with status 2.
 
 Rule analytics label rules with no historical match as `never_observed` rather than “dead.” Suggestions calculate approval purity and minimum evidence from resolved approvals only, report pending and stale-pending requests separately, and require double the configured evidence, zero denials, and zero pending requests before proposing a permanent allow for destructive calls.
 

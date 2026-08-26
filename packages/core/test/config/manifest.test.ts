@@ -328,6 +328,36 @@ commands = ["git push --force *"]
 		expect(manifest.workspaces?.[0]?.structuredRules?.[0]?.id).toBe('normal-edits');
 		expect(manifest.workspaces?.[0]?.guards?.[0]).toMatchObject({ id: 'no-force-push', decision: 'block' });
 	});
+
+	test('supports rule lifecycle controls and embedded policy tests', async () => {
+		const path = writeToml(`
+[env]
+name = "test"
+version = "1.0.0"
+timeout = 5
+[policy]
+default_unknown = "block"
+approval_method = "web"
+[[rule]]
+id = "temporary-read"
+decision = "allow"
+operations = ["filesystem.read"]
+mode = "warn"
+expires_at = "2030-01-01T00:00:00Z"
+max_uses = 2
+[[test]]
+id = "read-is-allowed"
+call = { agent = "host", tool = "read", command = "/work/file", operation = "filesystem.read" }
+expect = "allow"
+`);
+		const manifest = await loadManifest(path);
+		expect(manifest.structuredRules?.[0]).toMatchObject({
+			mode: 'warn',
+			expiresAt: '2030-01-01T00:00:00.000Z',
+			maxUses: 2,
+		});
+		expect(manifest.tests?.[0]).toMatchObject({ id: 'read-is-allowed', expect: 'allow' });
+	});
 });
 
 describe('loadManifest > structured policy validation', () => {

@@ -3,6 +3,7 @@ import type {
 	ApprovalDecision,
 	CallClassification,
 	Manifest,
+	ManifestPolicyTest,
 	PolicyConfig,
 	PolicyGuard,
 	ServerConfig,
@@ -205,6 +206,9 @@ function normalizeStructuredEntries(raw: unknown, scope: string, guard: boolean)
 			agents: normalizeStringList(value.agents, `${scope} "${id}".agents`),
 			operations,
 			reason: typeof value.reason === 'string' && value.reason.trim() ? value.reason.trim() : undefined,
+			mode: normalizeRuleMode(value.mode, `${scope} "${id}".mode`),
+			expiresAt: normalizeExpiry(value.expires_at, `${scope} "${id}".expires_at`),
+			maxUses: normalizeMaxUses(value.max_uses, `${scope} "${id}".max_uses`),
 		};
 		if (
 			!entry.tools &&
@@ -217,6 +221,60 @@ function normalizeStructuredEntries(raw: unknown, scope: string, guard: boolean)
 			throw new Error(`manifest ${scope} "${id}" must define at least one selector`);
 		}
 		return entry;
+	});
+}
+
+function normalizeRuleMode(value: unknown, field: string): 'enforce' | 'warn' | 'observe' | undefined {
+	if (value === undefined) return undefined;
+	if (value !== 'enforce' && value !== 'warn' && value !== 'observe') {
+		throw new Error(`manifest ${field} must be enforce, warn, or observe`);
+	}
+	return value;
+}
+
+function normalizeExpiry(value: unknown, field: string): string | undefined {
+	if (value === undefined) return undefined;
+	if (typeof value !== 'string' || !value.trim() || Number.isNaN(Date.parse(value))) {
+		throw new Error(`manifest ${field} must be an ISO timestamp`);
+	}
+	return new Date(value).toISOString();
+}
+
+function normalizeMaxUses(value: unknown, field: string): number | undefined {
+	if (value === undefined) return undefined;
+	if (!Number.isSafeInteger(value) || (value as number) <= 0) {
+		throw new Error(`manifest ${field} must be a positive integer`);
+	}
+	return value as number;
+}
+
+function normalizeManifestTests(raw: unknown): ManifestPolicyTest[] {
+	if (raw === undefined) return [];
+	if (!Array.isArray(raw)) throw new Error('manifest test must be an array of tables');
+	// fallow-ignore-next-line complexity -- one schema boundary validates the complete embedded call fixture.
+	return raw.map((value, index) => {
+		if (!isRecord(value) || !isRecord(value.call)) throw new Error(`manifest test[${index}].call must be a table`);
+		const call = value.call;
+		if (typeof call.agent !== 'string' || typeof call.tool !== 'string' || typeof call.command !== 'string') {
+			throw new Error(`manifest test[${index}].call requires string agent, tool, and command`);
+		}
+		if (!isDecision(value.expect)) throw new Error(`manifest test[${index}].expect must be allow, block, or approve`);
+		if (call.operation !== undefined && (typeof call.operation !== 'string' || !isCanonicalOperation(call.operation))) {
+			throw new Error(`manifest test[${index}].call.operation must be canonical`);
+		}
+		return {
+			id: typeof value.id === 'string' && value.id.trim() ? value.id.trim() : undefined,
+			call: {
+				agent: call.agent,
+				tool: call.tool,
+				command: call.command,
+				operation: call.operation as string | undefined,
+				workingDirectory: typeof call.workingDirectory === 'string' ? call.workingDirectory : undefined,
+				workspaceId: typeof call.workspaceId === 'string' ? call.workspaceId : undefined,
+				timestamp: typeof call.timestamp === 'string' ? call.timestamp : undefined,
+			},
+			expect: value.expect,
+		};
 	});
 }
 
@@ -307,6 +365,7 @@ export function parseManifestSource(source: string, sourceLabel = 'manifest'): M
 	const structuredRules = parsed.rule;
 	const guards = parsed.guard;
 	const server = isRecord(parsed.server) ? parsed.server : undefined;
+	const tests = parsed.test;
 
 	if (!env?.name || !env?.version) {
 		throw new Error('manifest env.name and env.version are required');
@@ -339,6 +398,7 @@ export function parseManifestSource(source: string, sourceLabel = 'manifest'): M
 		...(normalizedStructuredRules.length > 0 ? { structuredRules: normalizedStructuredRules } : {}),
 		...(normalizedGuards.length > 0 ? { guards: normalizedGuards } : {}),
 		workspaces: normalizeWorkspaces(workspaces),
+		...(tests === undefined ? {} : { tests: normalizeManifestTests(tests) }),
 		server: normalizeServer(server),
 	};
 }

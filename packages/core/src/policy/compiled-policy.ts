@@ -16,6 +16,8 @@ export interface CompiledPolicyMatch {
 	reason?: string;
 	kind: 'guard' | 'structured' | 'legacy';
 	scope?: 'global' | 'workspace';
+	mode?: 'enforce' | 'warn' | 'observe';
+	maxUses?: number;
 }
 
 interface EvaluationInputs {
@@ -61,8 +63,23 @@ function structuredMatches(
 	scope: 'global' | 'workspace'
 ): CompiledPolicyMatch[] {
 	return (rules ?? [])
-		.filter((rule) => matchesSelectors(rule, inputs))
-		.map((rule) => ({ id: rule.id, decision: rule.decision, reason: rule.reason, kind, scope }));
+		.filter((rule) => {
+			const evaluatedAt = Date.parse(inputs.call.timestamp);
+			return (
+				matchesSelectors(rule, inputs) &&
+				(rule.expiresAt === undefined ||
+					(Number.isFinite(evaluatedAt) ? evaluatedAt : Date.now()) < Date.parse(rule.expiresAt))
+			);
+		})
+		.map((rule) => ({
+			id: rule.id,
+			decision: rule.decision,
+			reason: rule.reason,
+			kind,
+			scope,
+			mode: rule.mode,
+			maxUses: rule.maxUses,
+		}));
 }
 
 function legacyMatches(
@@ -103,6 +120,18 @@ export interface CompiledPolicy {
 }
 
 export function compilePolicy(manifest: Manifest): CompiledPolicy {
+	const usage = new Map<string, number>();
+	const selectMatch = (matches: CompiledPolicyMatch[]): CompiledPolicyMatch | undefined => {
+		for (const match of matches) {
+			if (match.mode === 'observe') continue;
+			const key = `${match.scope}:${match.kind}:${match.id}`;
+			const used = usage.get(key) ?? 0;
+			if (match.maxUses !== undefined && used >= match.maxUses) continue;
+			usage.set(key, used + 1);
+			return match;
+		}
+		return undefined;
+	};
 	const inputsFor = (call: ToolCall, classification: CallClassification): EvaluationInputs => ({
 		call,
 		classification,
@@ -129,22 +158,22 @@ export function compilePolicy(manifest: Manifest): CompiledPolicy {
 			);
 		},
 		matchGlobalGuard(call, classification) {
-			return structuredMatches(manifest.guards, inputsFor(call, classification), 'guard', 'global')[0];
+			return selectMatch(structuredMatches(manifest.guards, inputsFor(call, classification), 'guard', 'global'));
 		},
 		matchWorkspaceGuard(workspace, call, classification) {
-			return structuredMatches(workspace?.guards, inputsFor(call, classification), 'guard', 'workspace')[0];
+			return selectMatch(structuredMatches(workspace?.guards, inputsFor(call, classification), 'guard', 'workspace'));
 		},
 		matchWorkspaceRule(workspace, call, classification) {
 			const inputs = inputsFor(call, classification);
 			return (
-				structuredMatches(workspace?.structuredRules, inputs, 'structured', 'workspace')[0] ??
+				selectMatch(structuredMatches(workspace?.structuredRules, inputs, 'structured', 'workspace')) ??
 				(workspace ? legacyMatches(workspace.rules, inputs, 'workspace')[0] : undefined)
 			);
 		},
 		matchGlobalRule(call, classification) {
 			const inputs = inputsFor(call, classification);
 			return (
-				structuredMatches(manifest.structuredRules, inputs, 'structured', 'global')[0] ??
+				selectMatch(structuredMatches(manifest.structuredRules, inputs, 'structured', 'global')) ??
 				legacyMatches(manifest.rules, inputs, 'global')[0]
 			);
 		},

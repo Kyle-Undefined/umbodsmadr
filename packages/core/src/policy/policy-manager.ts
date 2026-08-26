@@ -4,6 +4,7 @@ import type { EvaluationResult, Manifest, ToolCall } from '../core/types.ts';
 import { parseManifestSource } from '../config/manifest.ts';
 import { errorMessage } from '../utils/errors.ts';
 import { PolicyEngine } from './engine.ts';
+import { runManifestTests } from './manifest-tests.ts';
 
 export type PolicyReloadStatus = 'active' | 'error';
 
@@ -59,7 +60,17 @@ export class PolicyManager {
 
 	static async load(manifestPath: string): Promise<PolicyManager> {
 		const source = await readFile(manifestPath, 'utf8');
-		return new PolicyManager(parseManifestSource(source, manifestPath), hashSource(source));
+		const manifest = parseManifestSource(source, manifestPath);
+		PolicyManager.assertManifestTests(manifest);
+		return new PolicyManager(manifest, hashSource(source));
+	}
+
+	private static assertManifestTests(manifest: Manifest): void {
+		const report = runManifestTests(manifest);
+		if (report.failed > 0) {
+			const failed = report.results.filter((result) => !result.passed).map((result) => result.id);
+			throw new Error(`manifest policy tests failed: ${failed.join(', ')}`);
+		}
 	}
 
 	// fallow-ignore-next-line unused-class-member -- public host API and dynamic server dependency
@@ -95,6 +106,7 @@ export class PolicyManager {
 				return this.status();
 			}
 			const manifest = parseManifestSource(source, manifestPath);
+			PolicyManager.assertManifestTests(manifest);
 			const engine = new PolicyEngine(manifest);
 			if (attempt !== this.reloadAttempt) return this.status();
 			if (

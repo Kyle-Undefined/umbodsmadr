@@ -320,6 +320,7 @@ export function createUmbod(options: UmbodOptions): Umbod {
 			structuredRules: activeManifest.structuredRules ?? [],
 			guards: activeManifest.guards ?? [],
 			workspaces: activeManifest.workspaces ?? [],
+			tests: activeManifest.tests ?? [],
 			policyStatus: policyManager.status(),
 		});
 	}

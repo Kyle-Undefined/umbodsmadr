@@ -146,6 +146,7 @@ describe('audit log > migration', () => {
 		expect(columns.has('policy_hash')).toBe(true);
 		expect(columns.has('policy_generation')).toBe(true);
 		expect(columns.has('operation')).toBe(true);
+		expect(columns.has('matched_rule_mode')).toBe(true);
 		const indexes = indexNames(dbPath);
 		expect(indexes.has('audit_log_workspace_timestamp_idx')).toBe(true);
 		expect(indexes.has('audit_log_approval_hotspot_idx')).toBe(true);

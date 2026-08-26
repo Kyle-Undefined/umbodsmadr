@@ -4,7 +4,7 @@ import { errorMessage, logger, runConfigureCommand } from '@umbod/core';
 
 import { runStartCommand } from './commands/start.ts';
 import { runAnalyzeCommand, type AnalyzeTarget } from './commands/analyze.ts';
-import { runPolicySimulateCommand, type SimulationFailure } from './commands/policy.ts';
+import { runPolicySimulateCommand, runPolicyTestCommand, type SimulationFailure } from './commands/policy.ts';
 
 function readFlag(args: string[], name: string): string | undefined {
 	const index = args.indexOf(name);
@@ -60,6 +60,7 @@ Usage:
   umbod configure [--agent codex|cursor|claude|gemini] [--url http://127.0.0.1:9090] [--output .umbod]
   umbod analyze tools|rules|coverage [--env path] [--since 14d] [--project dir] [--workspace id] [--agent name] [--json]
   umbod policy simulate <candidate.toml> [--env baseline.toml] [--database path] [--since 30d] [--limit 2000|--all] [--fail-on check] [--json]
+  umbod policy test <manifest.toml>
 
 Commands:
   start       Load a manifest, start the local server, and initialize SQLite.
@@ -138,8 +139,13 @@ function simulationFailures(args: string[]): SimulationFailure[] {
 // fallow-ignore-next-line complexity -- this is the policy subcommand's argument-to-options boundary.
 async function runPolicyCli(args: string[]): Promise<void> {
 	const [action, candidatePath, ...policyArgs] = args;
+	if (action === 'test' && candidatePath && !candidatePath.startsWith('--') && policyArgs.length === 0) {
+		const report = await runPolicyTestCommand(candidatePath);
+		if (report.failed > 0) process.exitCode = 2;
+		return;
+	}
 	if (action !== 'simulate' || !candidatePath || candidatePath.startsWith('--')) {
-		throw new Error('policy requires: policy simulate <candidate.toml>');
+		throw new Error('policy requires: policy simulate <candidate.toml> or policy test <manifest.toml>');
 	}
 	validatePolicyArgs(policyArgs);
 	const { failed } = await runPolicySimulateCommand(candidatePath, {

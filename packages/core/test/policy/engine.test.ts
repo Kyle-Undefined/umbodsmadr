@@ -21,6 +21,33 @@ test('legacy programmatic manifests without workspaces retain global policy beha
 });
 
 describe('engine > structured policy', () => {
+	test('supports observe, warn, expiry, and per-generation usage limits', () => {
+		const engine = new PolicyEngine(
+			makeManifest({
+				policy: { default_unknown: 'block', approval_method: 'web' },
+				structuredRules: [
+					{ id: 'observe-only', decision: 'allow', tools: ['observe'], mode: 'observe' },
+					{ id: 'warn-write', decision: 'approve', tools: ['warn'], mode: 'warn' },
+					{ id: 'expired', decision: 'allow', tools: ['expired'], expiresAt: '2020-01-01T00:00:00.000Z' },
+					{ id: 'twice', decision: 'allow', tools: ['limited'], maxUses: 2 },
+				],
+			})
+		);
+		const observed = engine.evaluateWithTrace(makeCall({ tool: 'observe', command: 'run' }));
+		expect(observed.result.decision).toBe('block');
+		expect(observed.matches).toContainEqual(expect.objectContaining({ id: 'observe-only', selected: false }));
+		expect(engine.evaluate(makeCall({ tool: 'warn', command: 'run' }))).toMatchObject({
+			decision: 'approve',
+			matchedRuleMode: 'warn',
+		});
+		expect(
+			engine.evaluate(makeCall({ tool: 'expired', command: 'run', timestamp: '2026-01-01T00:00:00Z' })).decision
+		).toBe('block');
+		expect(engine.evaluate(makeCall({ tool: 'limited', command: 'run' })).decision).toBe('allow');
+		expect(engine.evaluate(makeCall({ tool: 'limited', command: 'run' })).decision).toBe('allow');
+		expect(engine.evaluate(makeCall({ tool: 'limited', command: 'run' })).decision).toBe('block');
+	});
+
 	test('returns all selector-aware matches while identifying the enforcement winner', () => {
 		const engine = new PolicyEngine(
 			makeManifest({

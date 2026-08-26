@@ -105,13 +105,15 @@ function matchedRuleResult(context: PolicyContext, classification: Classificatio
 		decision: match.decision,
 		classification,
 		matchedRule: pattern,
+		matchedRuleMode: match.mode === 'warn' ? 'warn' : 'enforce',
 		policyScope: context.policyScope,
 		resolvedWorkspaceId: workspaceId,
 		reason:
-			match.reason ??
-			(context.policyScope === 'workspace'
-				? workspaceReason
-				: `matched ${label} "${pattern}" in global policy${globalSuffix}`),
+			(match.mode === 'warn' ? 'warning policy match: ' : '') +
+			(match.reason ??
+				(context.policyScope === 'workspace'
+					? workspaceReason
+					: `matched ${label} "${pattern}" in global policy${globalSuffix}`)),
 	};
 }
 

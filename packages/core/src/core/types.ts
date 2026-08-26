@@ -43,6 +43,9 @@ export interface StructuredRule extends StructuredRuleSelectors {
 	id: string;
 	decision: ApprovalDecision;
 	reason?: string;
+	mode?: 'enforce' | 'warn' | 'observe';
+	expiresAt?: string;
+	maxUses?: number;
 }
 
 export interface PolicyGuard extends StructuredRuleSelectors {
@@ -50,6 +53,15 @@ export interface PolicyGuard extends StructuredRuleSelectors {
 	/** Guards are invariants and may only block. */
 	decision: 'block';
 	reason?: string;
+	mode?: 'enforce' | 'warn' | 'observe';
+	expiresAt?: string;
+	maxUses?: number;
+}
+
+export interface ManifestPolicyTest {
+	id?: string;
+	call: Omit<ToolCall, 'timestamp'> & { timestamp?: string };
+	expect: ApprovalDecision;
 }
 
 export interface WorkspaceConfig {
@@ -78,6 +90,7 @@ export interface Manifest {
 	guards?: PolicyGuard[];
 	/** Optional for compatibility with manifests created before workspace policy was introduced. */
 	workspaces?: WorkspaceConfig[];
+	tests?: ManifestPolicyTest[];
 	server: ServerConfig;
 }
 
@@ -101,6 +114,7 @@ export interface EvaluationResult {
 	decision: ApprovalDecision;
 	classification: CallClassification;
 	matchedRule?: string;
+	matchedRuleMode?: 'enforce' | 'warn';
 	policyScope?: 'global' | 'workspace';
 	resolvedWorkspaceId?: string;
 	reason: string;

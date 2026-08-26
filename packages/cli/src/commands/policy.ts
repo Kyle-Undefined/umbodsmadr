@@ -5,6 +5,7 @@ import {
 	resolveEnvPath,
 	resolveTimeParam,
 	simulatePolicy,
+	runManifestTests,
 	type PolicySimulation,
 } from '@umbod/core';
 import { resolve } from 'node:path';
@@ -28,6 +29,15 @@ export interface PolicySimulateOptions {
 	all?: boolean;
 	json?: boolean;
 	failOn?: SimulationFailure[];
+}
+
+export async function runPolicyTestCommand(manifestPath: string): Promise<ReturnType<typeof runManifestTests>> {
+	const report = runManifestTests(await loadManifest(resolve(manifestPath)));
+	for (const result of report.results) {
+		console.log(`${result.passed ? 'pass' : 'FAIL'} ${result.id}: expected ${result.expected}, got ${result.actual}`);
+	}
+	console.log(`Policy tests: ${report.passed} passed, ${report.failed} failed`);
+	return report;
 }
 
 function printSimulation(result: PolicySimulation): void {
