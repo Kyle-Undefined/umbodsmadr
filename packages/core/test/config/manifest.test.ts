@@ -255,6 +255,34 @@ id = "conceptual"
 		]);
 	});
 
+	test('accepts mobile-safe literal Windows drive and wsl.localhost roots', async () => {
+		const path = writeToml(`
+[env]
+name = "test"
+version = "1.0.0"
+timeout = 5
+
+[policy]
+default_unknown = "approve"
+approval_method = "web"
+
+[[workspaces]]
+id = "hlid"
+roots = [
+  '/home/kyle/development/repos/hlid',
+  'C:\\Users\\kyleu\\development\\repos\\hlid',
+  '\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\development\\repos\\hlid'
+]
+`);
+
+		const manifest = await loadManifest(path);
+		expect(manifest.workspaces?.[0]?.roots).toEqual([
+			'/home/kyle/development/repos/hlid',
+			'C:\\Users\\kyleu\\development\\repos\\hlid',
+			'\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\development\\repos\\hlid',
+		]);
+	});
+
 	test('workspace profiles support classification defaults', async () => {
 		const path = writeToml(`
 [env]

@@ -155,6 +155,7 @@
 			simulation: null,
 			simulationError: '',
 			simulationLoading: false,
+			simulationDrilldown: null,
 			policySourceHash: '',
 			policyLoadedSource: '',
 			policySourceLoading: false,
@@ -358,6 +359,28 @@
 			invalidateSimulation: function () {
 				this.simulatedSource = '';
 				this.policySaveMessage = '';
+				this.simulationDrilldown = null;
+			},
+
+			showSimulationExamples: function (title, count, examples) {
+				this.simulationDrilldown = {
+					title: title,
+					count: count || 0,
+					examples: Array.isArray(examples) ? examples : [],
+				};
+			},
+
+			showTransitionExamples: function (transition, count) {
+				this.showSimulationExamples(
+					transition.replace('->', ' → '),
+					count,
+					(this.simulation.examples || {})[transition]
+				);
+			},
+
+			showRuleExamples: function (rule) {
+				var key = rule.scope + ':' + (rule.workspaceId || '') + ':' + rule.id;
+				this.showSimulationExamples('Rule: ' + rule.id, rule.matched, (this.simulation.ruleExamples || {})[key]);
 			},
 
 			runSimulation: async function () {
@@ -374,6 +397,7 @@
 					if (!response.ok)
 						throw new Error(result && result.error ? result.error : 'simulation failed: ' + response.status);
 					this.simulation = result;
+					this.simulationDrilldown = null;
 					this.simulatedSource = this.simulationSource;
 				} catch (e) {
 					this.simulation = null;

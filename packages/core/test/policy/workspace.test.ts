@@ -23,6 +23,11 @@ const workspaces = [
 		roots: ['\\\\server\\share\\repo'],
 		rules: {},
 	},
+	{
+		id: 'wsl-unc',
+		roots: ['\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\development\\repos\\hlid'],
+		rules: {},
+	},
 ];
 
 describe('workspace path normalization', () => {
@@ -79,6 +84,21 @@ describe('workspace resolution', () => {
 	test('Windows paths match case-insensitively', () => {
 		const result = resolveWorkspace(manifest, makeCall({ workingDirectory: 'c:/work/CLIENT/src' }));
 		expect(result.workspace?.id).toBe('windows');
+	});
+
+	test('wsl.localhost UNC paths resolve with either slash style and case', () => {
+		expect(
+			resolveWorkspace(
+				manifest,
+				makeCall({ workingDirectory: '\\\\WSL.LOCALHOST\\Ubuntu-24.04\\home\\kyle\\development\\repos\\hlid\\src' })
+			).workspace?.id
+		).toBe('wsl-unc');
+		expect(
+			resolveWorkspace(
+				manifest,
+				makeCall({ workingDirectory: '//wsl.localhost/Ubuntu-24.04/home/kyle/development/repos/hlid/src' })
+			).workspace?.id
+		).toBe('wsl-unc');
 	});
 
 	test('Windows drive and UNC traversal spellings cannot bypass root matching', () => {

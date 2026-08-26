@@ -90,6 +90,9 @@ describe('policy simulation', () => {
 			candidateDecision: 'allow',
 			candidateMatchedRule: 'builds',
 		});
+		expect(result.newlyCoveredExamples[0]?.candidateMatchedRule).toBe('builds');
+		expect(result.ruleExamples['global::builds']?.[0]?.command).toBe('cargo build');
+		expect(result.ruleExamples['global::cargo *']?.[0]?.command).toBe('cargo build');
 		expect(result.candidateRules.find((rule) => rule.id === 'builds')).toMatchObject({
 			matched: 1,
 			selected: 1,
@@ -115,6 +118,7 @@ describe('policy simulation', () => {
 
 		expect(result.transitions['allow->block']).toBe(1);
 		expect(result.safety.unresolvedWorkspace).toBe(1);
+		expect(result.unresolvedWorkspaceExamples[0]?.command).toBe('git status');
 		expect(result.candidateRules.find((rule) => rule.id === 'credentials')).toMatchObject({ selected: 1 });
 	});
 

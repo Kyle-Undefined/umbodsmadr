@@ -69,6 +69,11 @@ export interface PolicySimulation {
 	};
 	examples: Partial<Record<DecisionTransition, PolicySimulationExample[]>>;
 	policyChangeExamples: PolicySimulationExample[];
+	newlyCoveredExamples: PolicySimulationExample[];
+	stillUnmatchedExamples: PolicySimulationExample[];
+	previouslyDeniedToAllowExamples: PolicySimulationExample[];
+	unresolvedWorkspaceExamples: PolicySimulationExample[];
+	ruleExamples: Record<string, PolicySimulationExample[]>;
 	breakdown: {
 		agents: Record<string, TransitionCounts>;
 		tools: Record<string, TransitionCounts>;
@@ -225,6 +230,11 @@ export function simulatePolicy(
 	const transitions: TransitionCounts = {};
 	const examples: PolicySimulation['examples'] = {};
 	const policyChangeExamples: PolicySimulationExample[] = [];
+	const newlyCoveredExamples: PolicySimulationExample[] = [];
+	const stillUnmatchedExamples: PolicySimulationExample[] = [];
+	const previouslyDeniedToAllowExamples: PolicySimulationExample[] = [];
+	const unresolvedWorkspaceExamples: PolicySimulationExample[] = [];
+	const ruleExamples: Record<string, PolicySimulationExample[]> = {};
 	const breakdown: PolicySimulation['breakdown'] = { agents: {}, tools: {}, classifications: {}, workspaces: {} };
 	const candidateRules = candidateRuleMap(candidateManifest);
 	const historicalDecisions: DecisionCounts = { allow: 0, block: 0, approve: 0 };
@@ -258,18 +268,40 @@ export function simulatePolicy(
 				policyChangeExamples.push(exampleFor(entry, baseline, candidate));
 			}
 		}
-		if (!baseline.result.matchedRule && candidate.result.matchedRule) newlyCovered += 1;
-		if (!candidate.result.matchedRule) stillUnmatched += 1;
+		const simulationExample = exampleFor(entry, baseline, candidate);
+		if (!baseline.result.matchedRule && candidate.result.matchedRule) {
+			newlyCovered += 1;
+			if (newlyCoveredExamples.length < examplesPerTransition) newlyCoveredExamples.push(simulationExample);
+		}
+		if (!candidate.result.matchedRule) {
+			stillUnmatched += 1;
+			if (stillUnmatchedExamples.length < examplesPerTransition) stillUnmatchedExamples.push(simulationExample);
+		}
 		if (transition === 'block->allow') blockedToAllow += 1;
 		if (transition === 'approve->allow') approveToAllow += 1;
 		if (candidate.result.decision === 'allow' && (entry.decision === 'block' || entry.approvalStatus === 'denied')) {
 			previouslyDeniedToAllow += 1;
+			if (previouslyDeniedToAllowExamples.length < examplesPerTransition)
+				previouslyDeniedToAllowExamples.push(simulationExample);
 		}
-		if (candidate.result.reason.startsWith('requested workspace')) unresolvedWorkspace += 1;
+		if (candidate.result.reason.startsWith('requested workspace')) {
+			unresolvedWorkspace += 1;
+			if (unresolvedWorkspaceExamples.length < examplesPerTransition)
+				unresolvedWorkspaceExamples.push(simulationExample);
+		}
 		const transitionExamples = (examples[transition] ??= []);
 		if (transitionExamples.length < examplesPerTransition)
 			transitionExamples.push(exampleFor(entry, baseline, candidate));
 		recordCandidateTrace(candidateRules, candidate, candidate.result.resolvedWorkspaceId);
+		for (const match of candidate.matches) {
+			const key = ruleKey(
+				match.scope ?? 'global',
+				match.scope === 'workspace' ? candidate.result.resolvedWorkspaceId : undefined,
+				match.id
+			);
+			const retained = (ruleExamples[key] ??= []);
+			if (retained.length < examplesPerTransition) retained.push(simulationExample);
+		}
 	}
 
 	return {
@@ -293,6 +325,11 @@ export function simulatePolicy(
 		safety: { blockedToAllow, approveToAllow, previouslyDeniedToAllow, unresolvedWorkspace },
 		examples,
 		policyChangeExamples,
+		newlyCoveredExamples,
+		stillUnmatchedExamples,
+		previouslyDeniedToAllowExamples,
+		unresolvedWorkspaceExamples,
+		ruleExamples,
 		breakdown,
 		candidateRules: finalizeFindings(candidateRules),
 		historicalDecisions,

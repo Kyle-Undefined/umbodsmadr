@@ -1628,10 +1628,24 @@ body {
 	grid-template-columns: repeat(4, minmax(0, 1fr));
 	gap: 8px;
 }
-.simulation-metrics > div {
+.simulation-metrics > div,
+.simulation-metrics > button {
 	padding: 12px;
 	border: 1px solid var(--border);
 	background: var(--surface-card);
+	color: inherit;
+	text-align: left;
+}
+.simulation-metrics button,
+.simulation-safety button,
+.simulation-rule-list button {
+	cursor: pointer;
+}
+.simulation-metrics button:hover,
+.simulation-metrics button:focus-visible,
+.simulation-rule-list button:hover,
+.simulation-rule-list button:focus-visible {
+	border-color: var(--accent);
 }
 .simulation-metrics strong {
 	display: block;
@@ -1648,9 +1662,10 @@ body {
 	gap: 8px;
 	margin: 10px 0;
 }
-.simulation-safety span {
+.simulation-safety button {
 	padding: 4px 8px;
 	border: 1px solid var(--success-border);
+	background: transparent;
 	color: var(--success);
 	font: 0.68rem var(--mono);
 }
@@ -1664,17 +1679,80 @@ body {
 	overflow: auto;
 	border-top: 1px solid var(--border);
 }
-.simulation-rule-list > div {
+.simulation-rule-list > button {
+	width: 100%;
 	display: grid;
 	grid-template-columns: minmax(0, 1fr) auto auto;
 	gap: 12px;
 	align-items: center;
 	padding: 7px 0;
 	border-bottom: 1px solid var(--border);
+	border-top: 0;
+	border-left: 0;
+	border-right: 0;
+	background: transparent;
+	color: inherit;
+	text-align: left;
 	font-size: 0.7rem;
 }
-.simulation-rule-list > div > span:nth-child(2) {
+.simulation-rule-list > button > span:nth-child(2) {
 	color: var(--text-muted);
+}
+.simulation-drilldown {
+	margin-top: 12px;
+	padding: 12px;
+	border: 1px solid var(--accent);
+	background: rgba(0, 0, 0, 0.25);
+}
+.simulation-drilldown-header,
+.simulation-example-meta,
+.simulation-example-transition {
+	display: flex;
+	justify-content: space-between;
+	gap: 12px;
+}
+.simulation-drilldown-header h3 {
+	margin: 0;
+	font-size: 0.82rem;
+}
+.simulation-drilldown-header p {
+	margin: 3px 0 0;
+	color: var(--text-muted);
+	font-size: 0.68rem;
+}
+.simulation-drilldown-header button {
+	border: 0;
+	background: transparent;
+	color: var(--text-secondary);
+	font-size: 1.25rem;
+}
+.simulation-example-list article {
+	margin-top: 10px;
+	padding: 10px;
+	border: 1px solid var(--border);
+	background: var(--surface-card);
+}
+.simulation-example-meta {
+	color: var(--text-muted);
+	font: 0.66rem var(--mono);
+}
+.simulation-example-list pre {
+	margin: 8px 0;
+	overflow: auto;
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+	color: var(--text-secondary);
+	font: 0.7rem/1.45 var(--mono);
+}
+.simulation-example-transition {
+	align-items: center;
+	color: var(--warning);
+	font: 0.66rem var(--mono);
+}
+.simulation-example-transition code {
+	color: var(--text-muted);
+	overflow-wrap: anywhere;
+	text-align: right;
 }
 
 @media (max-width: 700px) {
@@ -1686,6 +1764,13 @@ body {
 	}
 	.simulation-metrics {
 		grid-template-columns: repeat(2, minmax(0, 1fr));
+	}
+	.simulation-example-meta,
+	.simulation-example-transition {
+		display: grid;
+	}
+	.simulation-example-transition code {
+		text-align: left;
 	}
 }
 .decision-bar-allow {
