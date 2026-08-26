@@ -570,7 +570,11 @@
 
 			socket.addEventListener('close', function () {
 				if (activeSocket !== socket) return;
-				Alpine.store('dash').wsConnected = false;
+				var store = Alpine.store('dash');
+				store.wsConnected = false;
+				store.refreshActivity();
+				store.refreshApprovals();
+				store.refreshPolicyStatus();
 				reconnectTimer = setTimeout(connectSocket, 1000);
 			});
 		}

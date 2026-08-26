@@ -229,6 +229,9 @@ describe('dashboard activity updates', () => {
 			'/api/activity?limit=2',
 			'/api/approvals',
 			'/api/manifest',
+			'/api/activity?limit=2',
+			'/api/approvals',
+			'/api/manifest',
 		]);
 	});
 

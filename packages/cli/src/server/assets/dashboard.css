@@ -1563,6 +1563,11 @@ body {
 	color: var(--danger) !important;
 }
 
+.live-indicator.polling .pulse-dot {
+	background: var(--warning);
+	box-shadow: 0 0 8px var(--warning-dim);
+}
+
 .simulation-block {
 	margin-top: 22px;
 	padding-top: 18px;

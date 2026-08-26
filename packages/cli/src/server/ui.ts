@@ -48,9 +48,9 @@ export function renderDashboard(
             <span class="hero-status-sep" aria-hidden="true"></span>
             <span>${escapeHtml(manifest.policy.approval_method)} &middot; ${escapeHtml(manifest.policy.default_unknown)}</span>
             <span class="hero-status-sep" aria-hidden="true"></span>
-            <span class="live-indicator" :class="$store.dash.wsConnected ? '' : 'disconnected'">
+            <span class="live-indicator" :class="$store.dash.wsConnected ? '' : 'polling'">
               <span class="pulse-dot"></span>
-              <span x-text="$store.dash.wsConnected ? 'Live' : 'Offline'">Live</span>
+              <span x-text="$store.dash.wsConnected ? 'Live' : 'Polling'">Polling</span>
             </span>
             <span class="hero-status-sep" aria-hidden="true"></span>
             <button type="button" class="rules-toggle-btn" @click="$store.dash.rulesOpen = !$store.dash.rulesOpen" title="View active rules">&#9881; Edicts</button>
