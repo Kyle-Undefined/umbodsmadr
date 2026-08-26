@@ -1,6 +1,6 @@
 {
 	"name": "umbodsmadr",
-	"version": "0.0.20",
+	"version": "0.0.21",
 	"private": true,
 	"type": "module",
 	"description": "The arbiter of policy within the autonomous realm.",

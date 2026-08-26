@@ -311,6 +311,34 @@ describe('HTTP > POST /api/evaluate', () => {
 	});
 });
 
+describe('HTTP > POST /api/policy/simulate', () => {
+	test('replays a candidate manifest without activating it', async () => {
+		const before = await fetch(`${baseUrl}/api/policy/status`).then((response) => response.json());
+		const candidate = `[env]\nname = "candidate"\nversion = "1.0.0"\ntimeout = 30\n\n[policy]\ndefault_unknown = "approve"\napproval_method = "web"\n\n[rules]\n"git status" = "block"\n`;
+		const res = await fetch(`${baseUrl}/api/policy/simulate`, {
+			method: 'POST',
+			headers: { 'content-type': 'application/json' },
+			body: JSON.stringify({ candidate, limit: 10 }),
+		});
+		expect(res.status).toBe(200);
+		const body = await res.json();
+		expect(body.dataset.evaluated).toBeGreaterThan(0);
+		const after = await fetch(`${baseUrl}/api/policy/status`).then((response) => response.json());
+		expect(after).toEqual(before);
+	});
+
+	test('rejects an invalid candidate manifest', async () => {
+		const res = await fetch(`${baseUrl}/api/policy/simulate`, {
+			method: 'POST',
+			headers: { 'content-type': 'application/json' },
+			body: JSON.stringify({ candidate: '[policy]' }),
+		});
+		expect(res.status).toBe(400);
+		const body = await res.json();
+		expect(body.ok).toBe(false);
+	});
+});
+
 // ── POST /api/approvals/:id/approve|deny ─────────────────────
 
 describe('HTTP > approval actions', () => {

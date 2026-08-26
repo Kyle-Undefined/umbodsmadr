@@ -103,6 +103,13 @@
 			entries: Array.isArray(bootstrap.entries) ? bootstrap.entries : [],
 			approvals: Array.isArray(bootstrap.approvals) ? bootstrap.approvals : [],
 			manifest: bootstrap.manifest || {},
+			policyStatus: bootstrap.policyStatus || {
+				generation: 1,
+				reloadStatus: 'active',
+				sourceHash: '',
+				activeHash: '',
+				loadedAt: '',
+			},
 			insights: bootstrap.insights || {
 				tools: { totals: { entries: 0 }, byTool: [] },
 				rules: { rules: [], tomlSnippet: '' },
@@ -144,6 +151,10 @@
 			approvalRefreshGeneration: 0,
 			wsConnected: false,
 			rulesOpen: false,
+			simulationSource: '',
+			simulation: null,
+			simulationError: '',
+			simulationLoading: false,
 
 			get pendingCount() {
 				return this.approvals.length;
@@ -216,6 +227,10 @@
 				}).format(d);
 			},
 
+			shortHash: function (value) {
+				return value ? String(value).slice(0, 12) : 'unknown';
+			},
+
 			get filteredEntries() {
 				var self = this;
 				var q = self.searchQuery.toLowerCase();
@@ -261,19 +276,65 @@
 			get ruleEntries() {
 				var rules = this.manifest && this.manifest.rules ? this.manifest.rules : {};
 				var entries = Object.keys(rules).map(function (k) {
-					return { scope: 'global', pattern: k, decision: rules[k] };
+					return { scope: 'global', kind: 'legacy', pattern: k, decision: rules[k] };
+				});
+				(this.manifest.guards || []).forEach(function (rule) {
+					entries.push({ scope: 'global', kind: 'guard', pattern: rule.id, decision: 'block' });
+				});
+				(this.manifest.structuredRules || []).forEach(function (rule) {
+					entries.push({ scope: 'global', kind: rule.mode || 'rule', pattern: rule.id, decision: rule.decision });
 				});
 				var workspaces = this.manifest && Array.isArray(this.manifest.workspaces) ? this.manifest.workspaces : [];
 				workspaces.forEach(function (workspace) {
 					Object.keys(workspace.rules || {}).forEach(function (pattern) {
 						entries.push({
 							scope: workspace.id,
+							kind: 'legacy',
 							pattern: pattern,
 							decision: workspace.rules[pattern],
 						});
 					});
+					(workspace.guards || []).forEach(function (rule) {
+						entries.push({ scope: workspace.id, kind: 'guard', pattern: rule.id, decision: 'block' });
+					});
+					(workspace.structuredRules || []).forEach(function (rule) {
+						entries.push({ scope: workspace.id, kind: rule.mode || 'rule', pattern: rule.id, decision: rule.decision });
+					});
 				});
 				return entries;
+			},
+
+			refreshPolicyStatus: async function () {
+				try {
+					var response = await fetch('/api/manifest');
+					if (!response.ok) throw new Error('policy status fetch failed: ' + response.status);
+					var result = await response.json();
+					this.manifest = result;
+					this.policyStatus = result.policyStatus || this.policyStatus;
+				} catch (e) {
+					console.error('policy status refresh failed:', e);
+				}
+			},
+
+			runSimulation: async function () {
+				this.simulationLoading = true;
+				this.simulationError = '';
+				try {
+					var response = await fetch('/api/policy/simulate', {
+						method: 'POST',
+						headers: { 'content-type': 'application/json' },
+						body: JSON.stringify({ candidate: this.simulationSource, limit: 2000 }),
+					});
+					var result = await response.json();
+					if (!response.ok)
+						throw new Error(result && result.error ? result.error : 'simulation failed: ' + response.status);
+					this.simulation = result;
+				} catch (e) {
+					this.simulation = null;
+					this.simulationError = e instanceof Error ? e.message : String(e);
+				} finally {
+					this.simulationLoading = false;
+				}
 			},
 
 			setPageSize: function (n) {
@@ -490,6 +551,7 @@
 				store.wsConnected = true;
 				store.refreshActivity();
 				store.refreshApprovals();
+				store.refreshPolicyStatus();
 			});
 
 			socket.addEventListener('message', function (event) {

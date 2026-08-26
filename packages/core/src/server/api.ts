@@ -3,6 +3,7 @@ import { analyzeRules } from '../analytics/rule-analysis.ts';
 import { computeCoverage, scopeCoverageSources } from '../analytics/coverage.ts';
 import { computeAnalyticsSnapshot } from '../analytics/snapshot.ts';
 import { computeToolUsage } from '../analytics/tool-usage.ts';
+import { simulatePolicy } from '../analytics/policy-simulation.ts';
 import type { AnalyticsSnapshotQuery, AuditFilter } from '../analytics/types.ts';
 import type {
 	ApprovalDecision,
@@ -15,6 +16,7 @@ import type {
 import { AuditLogStore, type AuditLogStoreOptions } from '../db/audit-log.ts';
 import { toPermissionDecision } from '../hooks/adapter-utils.ts';
 import { PolicyManager, type PolicyStatus } from '../policy/policy-manager.ts';
+import { parseManifestSource } from '../config/manifest.ts';
 import { resolveTimeParam } from '../utils/duration.ts';
 import { errorMessage } from '../utils/errors.ts';
 import { logger } from '../utils/logger.ts';
@@ -356,6 +358,23 @@ export function createUmbod(options: UmbodOptions): Umbod {
 			});
 	}
 
+	async function handlePolicySimulation(req: Request): Promise<Response> {
+		try {
+			const body = (await req.json()) as Record<string, unknown>;
+			if (typeof body.candidate !== 'string' || !body.candidate.trim()) {
+				throw new Error('candidate must be a non-empty TOML string');
+			}
+			const limit = body.limit === undefined ? 2000 : body.limit;
+			if (typeof limit !== 'number' || !Number.isSafeInteger(limit) || limit < 1 || limit > 100_000) {
+				throw new Error('limit must be an integer between 1 and 100000');
+			}
+			const candidate = parseManifestSource(body.candidate, 'dashboard candidate');
+			return Response.json(simulatePolicy(policyManager.manifest, candidate, auditLog, { limit }));
+		} catch (error: unknown) {
+			return Response.json({ ok: false, error: errorMessage(error) }, { status: 400 });
+		}
+	}
+
 	async function handleHook(req: Request, url: URL): Promise<Response> {
 		const agentId = resolveAgentId(req, url);
 
@@ -544,6 +563,10 @@ export function createUmbod(options: UmbodOptions): Umbod {
 
 		if (url.pathname === '/api/evaluate') {
 			return handleEvaluate(req);
+		}
+
+		if (url.pathname === '/api/policy/simulate') {
+			return handlePolicySimulation(req);
 		}
 
 		if (url.pathname === '/api/hooks') {

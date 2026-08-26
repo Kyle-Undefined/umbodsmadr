@@ -42,7 +42,8 @@ function handleDashboard(umbod: Umbod, limit: number): Response {
 		umbod.auditLog.listRecent(limit),
 		umbod.listPendingApprovals(),
 		analytics.tools,
-		analytics.rules
+		analytics.rules,
+		umbod.policyStatus
 	);
 	return new Response(html, {
 		headers: { 'content-type': 'text/html; charset=utf-8' },

@@ -177,7 +177,9 @@ umbod start --env ~/policies/work.toml
 
 `http://localhost:9090`. Port 9090, because nine is the most sacred number in Norse mythology (Odin hung on Yggdrasil for nine days and nine nights).
 
-Pending approvals, full audit log, active rules. Outcomes are labeled in theme: _Sanctioned_, _Outlawed_, _Vouched_, _Forbidden_, _In Moot_. Real-time updates via WebSocket.
+Pending approvals, full audit log, structured and legacy rules, active policy generation/reload health, rule analytics, and per-call policy provenance. Outcomes are labeled in theme: _Sanctioned_, _Outlawed_, _Vouched_, _Forbidden_, _In Moot_. Real-time updates use WebSocket with a reconnect refresh of policy status.
+
+The Insights panel also includes a read-only policy simulator. Paste a complete candidate TOML manifest to replay up to 2,000 recent audit calls without activating the candidate or modifying the audit database. Use the CLI simulator for custom filters, unbounded replay, JSON output, and CI-style failure checks.
 
 ## platform
 

@@ -10,7 +10,10 @@ type FetchResponse = {
 	status: number;
 	json(): Promise<unknown>;
 };
-type FetchHandler = (url: string, options?: { method?: string }) => Promise<FetchResponse>;
+type FetchHandler = (
+	url: string,
+	options?: { method?: string; headers?: JsonRecord; body?: string }
+) => Promise<FetchResponse>;
 
 interface DashboardStore {
 	entries: JsonRecord[];
@@ -21,10 +24,15 @@ interface DashboardStore {
 	coverage: JsonRecord | null;
 	coverageError: string;
 	coverageLoading: boolean;
+	policyStatus: JsonRecord;
+	simulationSource: string;
+	simulation: JsonRecord | null;
+	simulationError: string;
 	refreshApprovals(): Promise<void>;
 	refreshActivity(): Promise<void>;
 	loadCoverage(): Promise<void>;
 	loadInsights(): Promise<void>;
+	runSimulation(): Promise<void>;
 	receiveActivity(entry: JsonRecord): void;
 	resolveApproval(id: number, action: string): Promise<void>;
 }
@@ -92,7 +100,7 @@ function dashboardHarness(options: {
 		location: { protocol: 'http:', host: 'localhost:9090', search: options.search ?? '' },
 		URLSearchParams,
 		WebSocket: FakeWebSocket,
-		fetch(url: string, fetchOptions?: { method?: string }) {
+		fetch(url: string, fetchOptions?: { method?: string; headers?: JsonRecord; body?: string }) {
 			fetchCalls.push(url);
 			return options.fetch(url, fetchOptions);
 		},
@@ -217,8 +225,10 @@ describe('dashboard activity updates', () => {
 		expect(harness.fetchCalls).toEqual([
 			'/api/activity?limit=2',
 			'/api/approvals',
+			'/api/manifest',
 			'/api/activity?limit=2',
 			'/api/approvals',
+			'/api/manifest',
 		]);
 	});
 
@@ -403,5 +413,21 @@ describe('dashboard activity updates', () => {
 		expect(harness.store.coverage?.workspace).toBe('newer');
 		expect(harness.store.coverageError).toBe('');
 		expect(harness.store.coverageLoading).toBe(false);
+	});
+
+	test('runs a read-only candidate policy simulation and exposes errors', async () => {
+		const harness = dashboardHarness({
+			fetch: async (url) =>
+				url === '/api/policy/simulate'
+					? jsonResponse({ dataset: { evaluated: 4 }, safety: {}, candidateRules: [] })
+					: jsonResponse([]),
+		});
+		harness.store.simulationSource = '[env]';
+
+		await harness.store.runSimulation();
+
+		expect(harness.store.simulation?.dataset).toEqual({ evaluated: 4 });
+		expect(harness.store.simulationError).toBe('');
+		expect(harness.fetchCalls).toEqual(['/api/policy/simulate']);
 	});
 });

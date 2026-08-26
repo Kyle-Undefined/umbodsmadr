@@ -1,4 +1,4 @@
-import type { ApprovalRequest, AuditEntry, Manifest, RuleAnalysis, ToolUsageStats } from '@umbod/core';
+import type { ApprovalRequest, AuditEntry, Manifest, PolicyStatus, RuleAnalysis, ToolUsageStats } from '@umbod/core';
 
 function escapeHtml(value: string): string {
 	return value
@@ -18,7 +18,8 @@ export function renderDashboard(
 	entries: AuditEntry[],
 	approvals: ApprovalRequest[],
 	toolUsage: ToolUsageStats,
-	ruleAnalysis: RuleAnalysis
+	ruleAnalysis: RuleAnalysis,
+	policyStatus: PolicyStatus
 ): string {
 	return `<!doctype html>
 <html lang="en">
@@ -60,11 +61,19 @@ export function renderDashboard(
               <button type="button" class="rules-close-btn" @click="$store.dash.rulesOpen = false" aria-label="Close">&times;</button>
             </div>
             <div class="rules-drawer-body">
-              <pre class="rules-code"><template x-for="rule in $store.dash.ruleEntries" :key="rule.scope + ':' + rule.pattern"><span><span class="rule-pattern" x-text="'[' + rule.scope + '] &quot;' + rule.pattern + '&quot;'"></span><span class="rule-eq"> = </span><span :class="'rule-decision rule-decision--' + rule.decision" x-text="'&quot;' + rule.decision + '&quot;'"></span>
+              <pre class="rules-code"><template x-for="rule in $store.dash.ruleEntries" :key="rule.scope + ':' + rule.kind + ':' + rule.pattern"><span><span class="rule-pattern" x-text="'[' + rule.scope + '] ' + rule.kind + ' ' + rule.pattern"></span><span class="rule-eq"> = </span><span :class="'rule-decision rule-decision--' + rule.decision" x-text="'&quot;' + rule.decision + '&quot;'"></span>
 </span></template><template x-if="$store.dash.ruleEntries.length === 0"><span># No rules configured</span></template></pre>
             </div>
           </div>
         </div>
+      </section>
+
+      <section class="policy-status-strip" :class="'policy-status-strip--' + $store.dash.policyStatus.reloadStatus">
+        <div><strong>Active policy</strong><span x-text="'generation ' + $store.dash.policyStatus.generation"></span></div>
+        <div><span class="policy-status-state" x-text="$store.dash.policyStatus.reloadStatus"></span><span x-text="$store.dash.shortHash($store.dash.policyStatus.activeHash)"></span></div>
+        <div><span>Loaded</span><time x-text="$store.dash.formatRelative($store.dash.policyStatus.loadedAt)"></time></div>
+        <div x-show="$store.dash.policyStatus.sourceHash !== $store.dash.policyStatus.activeHash"><span>Saved source</span><span x-text="$store.dash.shortHash($store.dash.policyStatus.sourceHash)"></span></div>
+        <p x-show="$store.dash.policyStatus.reloadError" x-text="$store.dash.policyStatus.reloadError"></p>
       </section>
 
       <section class="panel panel-approvals">
@@ -187,7 +196,7 @@ export function renderDashboard(
                   <time x-text="$store.dash.formatTimestamp(entry.timestamp)"></time>
                 </button>
                 <div class="call-explorer-detail" x-show="$store.dash.explorerOpenId === entry.id" x-cloak>
-                  <dl><div><dt>Agent</dt><dd x-text="entry.agent"></dd></div><div><dt>Project</dt><dd x-text="entry.workingDirectory || '—'"></dd></div><div><dt>Workspace</dt><dd x-text="entry.resolvedWorkspaceId || entry.workspaceId || 'Unscoped'"></dd></div><div><dt>Policy scope</dt><dd x-text="entry.policyScope || 'global'"></dd></div><div><dt>Session</dt><dd x-text="entry.sessionId || '—'"></dd></div><div><dt>Matched rule</dt><dd x-text="entry.matchedRule || 'fallback / automatic'"></dd></div></dl>
+                  <dl><div><dt>Agent</dt><dd x-text="entry.agent"></dd></div><div><dt>Operation</dt><dd x-text="entry.operation || 'inferred'"></dd></div><div><dt>Project</dt><dd x-text="entry.workingDirectory || '—'"></dd></div><div><dt>Workspace</dt><dd x-text="entry.resolvedWorkspaceId || entry.workspaceId || 'Unscoped'"></dd></div><div><dt>Policy scope</dt><dd x-text="entry.policyScope || 'global'"></dd></div><div><dt>Policy generation</dt><dd x-text="entry.policyGeneration || 'legacy'"></dd></div><div><dt>Policy hash</dt><dd x-text="$store.dash.shortHash(entry.policyHash)"></dd></div><div><dt>Session</dt><dd x-text="entry.sessionId || '—'"></dd></div><div><dt>Matched rule</dt><dd x-text="entry.matchedRule || 'fallback / automatic'"></dd></div><div><dt>Matched selectors</dt><dd x-text="(entry.matchedSelectors || []).join(', ') || '—'"></dd></div><div><dt>Rule mode</dt><dd x-text="entry.matchedMode || 'enforce'"></dd></div></dl>
                   <p class="call-reason" x-text="entry.reason"></p>
                   <pre x-text="JSON.stringify(entry.inputs, null, 2)"></pre>
                 </div>
@@ -232,6 +241,17 @@ export function renderDashboard(
 	          <button type="button" class="button button-secondary" :disabled="$store.dash.coverageLoading" @click="$store.dash.loadCoverage()" x-text="$store.dash.coverageLoading ? 'Scanning transcripts…' : 'Check transcript coverage'"></button>
 	          <template x-if="$store.dash.coverage"><span class="coverage-summary" x-text="Math.round($store.dash.coverage.coverageRatio * 100) + '% covered · ' + $store.dash.coverage.totals.gaps + ' gaps'"></span></template>
 	          <template x-if="$store.dash.coverageError"><span class="coverage-error" x-text="$store.dash.coverageError"></span></template>
+	        </div>
+	        <div class="simulation-block">
+	          <div class="simulation-header"><div><h3 class="insight-heading">Policy Simulator</h3><p>Paste a complete candidate TOML manifest. The active policy and audit database remain unchanged.</p></div><button type="button" class="button button-secondary" :disabled="$store.dash.simulationLoading || !$store.dash.simulationSource.trim()" @click="$store.dash.runSimulation()" x-text="$store.dash.simulationLoading ? 'Simulating…' : 'Simulate candidate'"></button></div>
+	          <textarea class="simulation-source" x-model="$store.dash.simulationSource" spellcheck="false" placeholder="[env]&#10;name = &quot;candidate&quot;&#10;…"></textarea>
+	          <template x-if="$store.dash.simulationError"><p class="coverage-error" x-text="$store.dash.simulationError"></p></template>
+	          <template x-if="$store.dash.simulation"><div class="simulation-results">
+	            <div class="simulation-metrics"><div><strong x-text="$store.dash.simulation.dataset.evaluated"></strong><span>calls replayed</span></div><div><strong x-text="$store.dash.simulation.policyChanges"></strong><span>policy changes</span></div><div><strong x-text="$store.dash.simulation.newlyCovered"></strong><span>newly covered</span></div><div><strong x-text="$store.dash.simulation.stillUnmatched"></strong><span>unmatched</span></div></div>
+	            <div class="simulation-safety"><span :class="{ 'simulation-risk': $store.dash.simulation.safety.blockedToAllow > 0 }" x-text="$store.dash.simulation.safety.blockedToAllow + ' block → allow'"></span><span :class="{ 'simulation-risk': $store.dash.simulation.safety.approveToAllow > 0 }" x-text="$store.dash.simulation.safety.approveToAllow + ' approve → allow'"></span><span :class="{ 'simulation-risk': $store.dash.simulation.safety.previouslyDeniedToAllow > 0 }" x-text="$store.dash.simulation.safety.previouslyDeniedToAllow + ' denied → allow'"></span><span :class="{ 'simulation-risk': $store.dash.simulation.safety.unresolvedWorkspace > 0 }" x-text="$store.dash.simulation.safety.unresolvedWorkspace + ' unresolved workspace'"></span></div>
+	            <p class="coverage-summary" x-show="$store.dash.simulation.dataset.truncated">Dataset truncated; increase the replay limit in the CLI for release-gating.</p>
+	            <div class="simulation-rule-list"><template x-for="rule in $store.dash.simulation.candidateRules" :key="rule.scope + ':' + rule.id"><div><code x-text="rule.id"></code><span x-text="rule.kind + ' · ' + rule.scope"></span><span class="health-chip" :class="'health-chip--' + rule.status" x-text="rule.status"></span></div></template></div>
+	          </div></template>
 	        </div>
         </div>
       </section>
@@ -330,7 +350,7 @@ export function renderDashboard(
       </section>
     </main>
 
-    <script id="umbod-bootstrap" type="application/json">${serializeJson({ manifest, entries, approvals, insights: { tools: toolUsage, rules: ruleAnalysis } })}</script>
+    <script id="umbod-bootstrap" type="application/json">${serializeJson({ manifest, policyStatus, entries, approvals, insights: { tools: toolUsage, rules: ruleAnalysis } })}</script>
   </body>
 </html>`;
 }
