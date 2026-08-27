@@ -328,4 +328,18 @@ describe('audit log > cursor calls', () => {
 		});
 		expect(store.getEntry(entryId + 1)).toBeUndefined();
 	});
+
+	test('pages analytics batches by id without duplicates', () => {
+		for (let index = 1; index <= 5; index += 1) {
+			store.append(makeCall({ command: `batch-${index}` }), makeResult());
+		}
+		const first = store.listRecentBatch({}, undefined, 2);
+		const second = store.listRecentBatch({}, first.nextCursor, 2);
+		const final = store.listRecentBatch({}, second.nextCursor, 2);
+
+		expect(first.entries.map((entry) => entry.command)).toEqual(['batch-5', 'batch-4']);
+		expect(second.entries.map((entry) => entry.command)).toEqual(['batch-3', 'batch-2']);
+		expect(final.entries.map((entry) => entry.command)).toEqual(['batch-1']);
+		expect(final.nextCursor).toBeUndefined();
+	});
 });

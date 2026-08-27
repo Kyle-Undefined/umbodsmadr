@@ -419,6 +419,29 @@ export class AuditLogReader {
 		};
 	}
 
+	/** Internal analytics paging with a larger bound than the interactive call explorer. */
+	listRecentBatch(
+		filter: AuditFilter,
+		cursor: number | undefined,
+		batchSize: number
+	): { entries: StoredAuditEntry[]; nextCursor: number | undefined } {
+		if (!Number.isSafeInteger(batchSize) || batchSize < 1 || batchSize > 20000) {
+			throw new Error(`batchSize must be an integer between 1 and 20000; received ${String(batchSize)}`);
+		}
+		if (cursor !== undefined && (!Number.isSafeInteger(cursor) || cursor <= 0)) {
+			throw new Error(`cursor must be a positive audit entry id; received ${String(cursor)}`);
+		}
+		const page = cursorPage(
+			this.cursorRows(filter, { cursor, pageSize: batchSize }, 'full'),
+			{ cursor, pageSize: batchSize },
+			'full'
+		);
+		return {
+			entries: page.entries as StoredAuditEntry[],
+			nextCursor: page.nextCursor === null ? undefined : Number(page.nextCursor),
+		};
+	}
+
 	private cursorRows(
 		filter: AuditFilter,
 		query: CursorCallQuery,

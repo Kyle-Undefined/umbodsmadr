@@ -345,6 +345,31 @@ describe('HTTP > POST /api/policy/simulate', () => {
 		expect(after).toEqual(before);
 	});
 
+	test('supports an explicit full-database replay', async () => {
+		const loaded = await fetch(`${baseUrl}/api/policy/source`).then((response) => response.json());
+		const res = await fetch(`${baseUrl}/api/policy/simulate`, {
+			method: 'POST',
+			headers: { 'content-type': 'application/json' },
+			body: JSON.stringify({ candidate: loaded.source, all: true }),
+		});
+		expect(res.status).toBe(200);
+		const body = await res.json();
+		expect(body.dataset.truncated).toBe(false);
+		expect(body.dataset.limit).toBeNull();
+		expect(body.dataset.evaluated).toBe(body.dataset.eligible);
+	});
+
+	test('rejects an ambiguous full replay with a limit', async () => {
+		const loaded = await fetch(`${baseUrl}/api/policy/source`).then((response) => response.json());
+		const res = await fetch(`${baseUrl}/api/policy/simulate`, {
+			method: 'POST',
+			headers: { 'content-type': 'application/json' },
+			body: JSON.stringify({ candidate: loaded.source, all: true, limit: 2000 }),
+		});
+		expect(res.status).toBe(400);
+		expect((await res.json()).error).toContain('either all or limit');
+	});
+
 	test('rejects an invalid candidate manifest', async () => {
 		const res = await fetch(`${baseUrl}/api/policy/simulate`, {
 			method: 'POST',

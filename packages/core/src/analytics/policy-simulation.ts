@@ -221,10 +221,6 @@ export function simulatePolicy(
 		decision: options.decision,
 		search: options.search,
 	};
-	const { eligible, entries } = auditLog.withSnapshot(() => {
-		const eligible = auditLog.countFiltered(filter);
-		return { eligible, entries: auditLog.listRecentFiltered(filter, requestedLimit ?? eligible) };
-	});
 	const baselineEngine = new PolicyEngine(baselineManifest);
 	const candidateEngine = new PolicyEngine(candidateManifest);
 	const transitions: TransitionCounts = {};
@@ -248,61 +244,79 @@ export function simulatePolicy(
 	let approveToAllow = 0;
 	let previouslyDeniedToAllow = 0;
 	let unresolvedWorkspace = 0;
+	let eligible = 0;
+	let evaluated = 0;
 
-	for (const entry of entries) {
-		const baseline = baselineEngine.evaluateWithTrace(entry);
-		const candidate = candidateEngine.evaluateWithTrace(entry);
-		const transition = `${baseline.result.decision}->${candidate.result.decision}` as DecisionTransition;
-		incrementTransition(transitions, transition);
-		incrementBreakdown(breakdown.agents, entry.agent, transition);
-		incrementBreakdown(breakdown.tools, entry.tool, transition);
-		incrementBreakdown(breakdown.classifications, candidate.result.classification, transition);
-		incrementBreakdown(breakdown.workspaces, candidate.result.resolvedWorkspaceId, transition);
-		historicalDecisions[entry.decision] += 1;
-		baselineTotals[baseline.result.decision] += 1;
-		candidateTotals[candidate.result.decision] += 1;
-		if (baseline.result.decision === candidate.result.decision) unchangedDecisions += 1;
-		if (!samePolicyResult(baseline, candidate)) {
-			policyChanges += 1;
-			if (policyChangeExamples.length < examplesPerTransition) {
-				policyChangeExamples.push(exampleFor(entry, baseline, candidate));
+	auditLog.withSnapshot(() => {
+		eligible = auditLog.countFiltered(filter);
+		const evaluationLimit = requestedLimit ?? eligible;
+		let cursor: number | undefined;
+		while (evaluated < evaluationLimit) {
+			const page = auditLog.listRecentBatch(filter, cursor, Math.min(20000, evaluationLimit - evaluated));
+			const entries = page.entries;
+			if (entries.length === 0) break;
+			for (const entry of entries) {
+				const baseline = baselineEngine.evaluateWithTrace(entry);
+				const candidate = candidateEngine.evaluateWithTrace(entry);
+				const transition = `${baseline.result.decision}->${candidate.result.decision}` as DecisionTransition;
+				incrementTransition(transitions, transition);
+				incrementBreakdown(breakdown.agents, entry.agent, transition);
+				incrementBreakdown(breakdown.tools, entry.tool, transition);
+				incrementBreakdown(breakdown.classifications, candidate.result.classification, transition);
+				incrementBreakdown(breakdown.workspaces, candidate.result.resolvedWorkspaceId, transition);
+				historicalDecisions[entry.decision] += 1;
+				baselineTotals[baseline.result.decision] += 1;
+				candidateTotals[candidate.result.decision] += 1;
+				if (baseline.result.decision === candidate.result.decision) unchangedDecisions += 1;
+				if (!samePolicyResult(baseline, candidate)) {
+					policyChanges += 1;
+					if (policyChangeExamples.length < examplesPerTransition) {
+						policyChangeExamples.push(exampleFor(entry, baseline, candidate));
+					}
+				}
+				const simulationExample = exampleFor(entry, baseline, candidate);
+				if (!baseline.result.matchedRule && candidate.result.matchedRule) {
+					newlyCovered += 1;
+					if (newlyCoveredExamples.length < examplesPerTransition) newlyCoveredExamples.push(simulationExample);
+				}
+				if (!candidate.result.matchedRule) {
+					stillUnmatched += 1;
+					if (stillUnmatchedExamples.length < examplesPerTransition) stillUnmatchedExamples.push(simulationExample);
+				}
+				if (transition === 'block->allow') blockedToAllow += 1;
+				if (transition === 'approve->allow') approveToAllow += 1;
+				if (
+					candidate.result.decision === 'allow' &&
+					(entry.decision === 'block' || entry.approvalStatus === 'denied')
+				) {
+					previouslyDeniedToAllow += 1;
+					if (previouslyDeniedToAllowExamples.length < examplesPerTransition)
+						previouslyDeniedToAllowExamples.push(simulationExample);
+				}
+				if (candidate.result.reason.startsWith('requested workspace')) {
+					unresolvedWorkspace += 1;
+					if (unresolvedWorkspaceExamples.length < examplesPerTransition)
+						unresolvedWorkspaceExamples.push(simulationExample);
+				}
+				const transitionExamples = (examples[transition] ??= []);
+				if (transitionExamples.length < examplesPerTransition)
+					transitionExamples.push(exampleFor(entry, baseline, candidate));
+				recordCandidateTrace(candidateRules, candidate, candidate.result.resolvedWorkspaceId);
+				for (const match of candidate.matches) {
+					const key = ruleKey(
+						match.scope ?? 'global',
+						match.scope === 'workspace' ? candidate.result.resolvedWorkspaceId : undefined,
+						match.id
+					);
+					const retained = (ruleExamples[key] ??= []);
+					if (retained.length < examplesPerTransition) retained.push(simulationExample);
+				}
 			}
+			evaluated += entries.length;
+			if (!page.nextCursor) break;
+			cursor = page.nextCursor;
 		}
-		const simulationExample = exampleFor(entry, baseline, candidate);
-		if (!baseline.result.matchedRule && candidate.result.matchedRule) {
-			newlyCovered += 1;
-			if (newlyCoveredExamples.length < examplesPerTransition) newlyCoveredExamples.push(simulationExample);
-		}
-		if (!candidate.result.matchedRule) {
-			stillUnmatched += 1;
-			if (stillUnmatchedExamples.length < examplesPerTransition) stillUnmatchedExamples.push(simulationExample);
-		}
-		if (transition === 'block->allow') blockedToAllow += 1;
-		if (transition === 'approve->allow') approveToAllow += 1;
-		if (candidate.result.decision === 'allow' && (entry.decision === 'block' || entry.approvalStatus === 'denied')) {
-			previouslyDeniedToAllow += 1;
-			if (previouslyDeniedToAllowExamples.length < examplesPerTransition)
-				previouslyDeniedToAllowExamples.push(simulationExample);
-		}
-		if (candidate.result.reason.startsWith('requested workspace')) {
-			unresolvedWorkspace += 1;
-			if (unresolvedWorkspaceExamples.length < examplesPerTransition)
-				unresolvedWorkspaceExamples.push(simulationExample);
-		}
-		const transitionExamples = (examples[transition] ??= []);
-		if (transitionExamples.length < examplesPerTransition)
-			transitionExamples.push(exampleFor(entry, baseline, candidate));
-		recordCandidateTrace(candidateRules, candidate, candidate.result.resolvedWorkspaceId);
-		for (const match of candidate.matches) {
-			const key = ruleKey(
-				match.scope ?? 'global',
-				match.scope === 'workspace' ? candidate.result.resolvedWorkspaceId : undefined,
-				match.id
-			);
-			const retained = (ruleExamples[key] ??= []);
-			if (retained.length < examplesPerTransition) retained.push(simulationExample);
-		}
-	}
+	});
 
 	return {
 		baselineManifestHash: manifestHash(baselineManifest),
@@ -310,8 +324,8 @@ export function simulatePolicy(
 		dataset: {
 			strategy: 'latest-by-id-desc',
 			eligible,
-			evaluated: entries.length,
-			truncated: entries.length < eligible,
+			evaluated,
+			truncated: evaluated < eligible,
 			limit: requestedLimit ?? null,
 			since: options.since,
 			until: options.until,

@@ -28,9 +28,12 @@ interface DashboardStore {
 	simulationSource: string;
 	simulation: JsonRecord | null;
 	simulationError: string;
+	simulationReplayMode: string;
+	simulatedReplayMode: string;
 	policySourceHash: string;
 	policyLoadedSource: string;
 	policySaveMessage: string;
+	policySourceError: string;
 	refreshApprovals(): Promise<void>;
 	refreshActivity(): Promise<void>;
 	loadCoverage(): Promise<void>;
@@ -58,10 +61,12 @@ function dashboardHarness(options: {
 		emit(entry: JsonRecord, index?: number): void;
 	};
 	fetchCalls: string[];
+	fetchRequests: Array<{ url: string; options?: { method?: string; headers?: JsonRecord; body?: string } }>;
 } {
 	const initListeners: Array<() => void> = [];
 	const sockets: FakeWebSocket[] = [];
 	const fetchCalls: string[] = [];
+	const fetchRequests: Array<{ url: string; options?: { method?: string; headers?: JsonRecord; body?: string } }> = [];
 	let store: DashboardStore | undefined;
 
 	class FakeWebSocket {
@@ -109,6 +114,7 @@ function dashboardHarness(options: {
 		WebSocket: FakeWebSocket,
 		fetch(url: string, fetchOptions?: { method?: string; headers?: JsonRecord; body?: string }) {
 			fetchCalls.push(url);
+			fetchRequests.push({ url, options: fetchOptions });
 			return options.fetch(url, fetchOptions);
 		},
 		setTimeout(callback: () => void) {
@@ -148,6 +154,7 @@ function dashboardHarness(options: {
 			},
 		},
 		fetchCalls,
+		fetchRequests,
 	};
 }
 
@@ -439,6 +446,78 @@ describe('dashboard activity updates', () => {
 		expect(harness.store.simulation?.dataset).toEqual({ evaluated: 4 });
 		expect(harness.store.simulationError).toBe('');
 		expect(harness.fetchCalls).toEqual(['/api/policy/simulate']);
+		expect(JSON.parse(harness.fetchRequests[0]?.options?.body ?? '{}')).toEqual({
+			candidate: '[env]',
+			limit: 2000,
+		});
+	});
+
+	test('requests an explicit all-record replay and retains drill-down examples', async () => {
+		const example = { id: 7, command: 'git status', baselineDecision: 'block', candidateDecision: 'allow' };
+		const harness = dashboardHarness({
+			fetch: async (url) =>
+				url === '/api/policy/simulate'
+					? jsonResponse({
+							dataset: { evaluated: 230_000, truncated: false, limit: null },
+							safety: { blockedToAllow: 1 },
+							examples: { 'block->allow': [example] },
+							candidateRules: [],
+							manifestTests: { passed: 0, failed: 0, results: [] },
+						})
+					: jsonResponse([]),
+		});
+		harness.store.simulationSource = '[env]';
+		harness.store.simulationReplayMode = 'all';
+
+		await harness.store.runSimulation();
+		(
+			harness.store as DashboardStore & { showTransitionExamples(key: string, count: number): void }
+		).showTransitionExamples('block->allow', 1);
+
+		expect(JSON.parse(harness.fetchRequests[0]?.options?.body ?? '{}')).toEqual({ candidate: '[env]', all: true });
+		expect(harness.store.simulatedReplayMode).toBe('all');
+		expect(
+			(harness.store as DashboardStore & { simulationDrilldown: { examples: JsonRecord[] } }).simulationDrilldown
+				.examples
+		).toEqual([example]);
+	});
+
+	test('keeps a newer simulation when an older full replay finishes later', async () => {
+		let resolveOlder: ((response: FetchResponse) => void) | undefined;
+		const older = new Promise<FetchResponse>((resolve) => {
+			resolveOlder = resolve;
+		});
+		let calls = 0;
+		const harness = dashboardHarness({
+			fetch: async (url) => {
+				if (url !== '/api/policy/simulate') return jsonResponse([]);
+				calls += 1;
+				if (calls === 1) return older;
+				return jsonResponse({
+					dataset: { evaluated: 2000 },
+					safety: {},
+					candidateRules: [],
+					manifestTests: { passed: 0, failed: 0, results: [] },
+				});
+			},
+		});
+		harness.store.simulationSource = '[env]';
+		harness.store.simulationReplayMode = 'all';
+		const olderRequest = harness.store.runSimulation();
+		harness.store.simulationReplayMode = 'recent';
+		await harness.store.runSimulation();
+		resolveOlder?.(
+			jsonResponse({
+				dataset: { evaluated: 230_000 },
+				safety: {},
+				candidateRules: [],
+				manifestTests: { passed: 0, failed: 0, results: [] },
+			})
+		);
+		await olderRequest;
+
+		expect(harness.store.simulation?.dataset).toEqual({ evaluated: 2000 });
+		expect(harness.store.simulatedReplayMode).toBe('recent');
 	});
 
 	test('loads, simulates, and activates the exact edited policy source', async () => {

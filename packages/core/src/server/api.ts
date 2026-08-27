@@ -365,13 +365,25 @@ export function createUmbod(options: UmbodOptions): Umbod {
 			if (typeof body.candidate !== 'string' || !body.candidate.trim()) {
 				throw new Error('candidate must be a non-empty TOML string');
 			}
+			if (body.all !== undefined && typeof body.all !== 'boolean') {
+				throw new Error('all must be a boolean');
+			}
+			const all = body.all === true;
+			if (all && body.limit !== undefined) {
+				throw new Error('policy simulation accepts either all or limit, not both');
+			}
 			const limit = body.limit === undefined ? 2000 : body.limit;
-			if (typeof limit !== 'number' || !Number.isSafeInteger(limit) || limit < 1 || limit > 100_000) {
+			if (!all && (typeof limit !== 'number' || !Number.isSafeInteger(limit) || limit < 1 || limit > 100_000)) {
 				throw new Error('limit must be an integer between 1 and 100000');
 			}
 			const candidate = parseManifestSource(body.candidate, 'dashboard candidate');
 			return Response.json({
-				...simulatePolicy(policyManager.manifest, candidate, auditLog, { limit }),
+				...simulatePolicy(
+					policyManager.manifest,
+					candidate,
+					auditLog,
+					all ? { all: true } : { limit: limit as number }
+				),
 				manifestTests: runManifestTests(candidate),
 			});
 		} catch (error: unknown) {

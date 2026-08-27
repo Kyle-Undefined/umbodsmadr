@@ -155,7 +155,10 @@
 			simulation: null,
 			simulationError: '',
 			simulationLoading: false,
+			simulationRequestGeneration: 0,
 			simulationDrilldown: null,
+			simulationReplayMode: 'recent',
+			simulatedReplayMode: '',
 			policySourceHash: '',
 			policyLoadedSource: '',
 			policySourceLoading: false,
@@ -177,6 +180,7 @@
 					this.policySourceDirty &&
 					this.simulatedSource === this.simulationSource &&
 					this.simulation &&
+					this.simulatedReplayMode === this.simulationReplayMode &&
 					this.simulation.manifestTests.failed === 0
 				);
 			},
@@ -358,6 +362,7 @@
 
 			invalidateSimulation: function () {
 				this.simulatedSource = '';
+				this.simulatedReplayMode = '';
 				this.policySaveMessage = '';
 				this.simulationDrilldown = null;
 			},
@@ -384,6 +389,7 @@
 			},
 
 			runSimulation: async function () {
+				var generation = ++this.simulationRequestGeneration;
 				this.simulationLoading = true;
 				this.policySourceError = '';
 				this.policySaveMessage = '';
@@ -391,20 +397,27 @@
 					var response = await fetch('/api/policy/simulate', {
 						method: 'POST',
 						headers: { 'content-type': 'application/json' },
-						body: JSON.stringify({ candidate: this.simulationSource, limit: 2000 }),
+						body: JSON.stringify(
+							this.simulationReplayMode === 'all'
+								? { candidate: this.simulationSource, all: true }
+								: { candidate: this.simulationSource, limit: 2000 }
+						),
 					});
 					var result = await response.json();
+					if (generation !== this.simulationRequestGeneration) return;
 					if (!response.ok)
 						throw new Error(result && result.error ? result.error : 'simulation failed: ' + response.status);
 					this.simulation = result;
 					this.simulationDrilldown = null;
 					this.simulatedSource = this.simulationSource;
+					this.simulatedReplayMode = this.simulationReplayMode;
 				} catch (e) {
+					if (generation !== this.simulationRequestGeneration) return;
 					this.simulation = null;
 					this.simulatedSource = '';
 					this.policySourceError = e instanceof Error ? e.message : String(e);
 				} finally {
-					this.simulationLoading = false;
+					if (generation === this.simulationRequestGeneration) this.simulationLoading = false;
 				}
 			},
 
