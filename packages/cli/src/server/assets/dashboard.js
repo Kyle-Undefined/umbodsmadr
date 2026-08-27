@@ -408,6 +408,7 @@
 				this.showSimulationExamples('Rule: ' + rule.id, rule.matched, (this.simulation.ruleExamples || {})[key]);
 			},
 
+			// fallow-ignore-next-line complexity -- one async boundary keeps stale simulation responses from replacing newer results.
 			runSimulation: async function () {
 				var generation = ++this.simulationRequestGeneration;
 				this.simulationLoading = true;

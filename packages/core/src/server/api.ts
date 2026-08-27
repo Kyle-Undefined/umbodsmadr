@@ -376,6 +376,7 @@ export function createUmbod(options: UmbodOptions): Umbod {
 			});
 	}
 
+	// fallow-ignore-next-line complexity -- one read-only request boundary keeps candidate and replay validation atomic.
 	async function handlePolicySimulation(req: Request): Promise<Response> {
 		try {
 			const body = (await req.json()) as Record<string, unknown>;
