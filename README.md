@@ -163,13 +163,17 @@ Roots are optional. A host can use a purely conceptual workspace by sending its 
 
 `umbod configure --agent <name>` generates the hook config and shell wrapper, written to `.umbod/` by default.
 
-Supported agents: Claude Code, Cursor, Codex, Gemini CLI.
+Supported agents: Claude Code, Cursor, Codex, Gemini CLI, OpenCode, and Pi.
 
 ```bash
 umbod configure --agent claude
 umbod configure --agent cursor --output ~/hooks
+umbod configure --agent opencode
+umbod configure --agent pi
 umbod configure  # all of them
 ```
+
+OpenCode and Pi use their native extension APIs because ACP itself does not define a pre-tool policy hook. Add the generated OpenCode plugin entry to `~/.config/opencode/opencode.json`, or the generated Pi extension entry to `~/.pi/agent/settings.json`. Their generated extensions fail closed when Umbod denies a call or cannot be reached.
 
 For Codex, append the generated `.umbod/codex.toml` snippet to `~/.codex/config.toml`. Keep the generated `.umbod/hook-codex.sh` in place; the TOML snippet points Codex at that script. On first launch after adding the hook, Codex will ask you to trust it before it runs.
 

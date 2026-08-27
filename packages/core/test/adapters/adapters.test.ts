@@ -3,15 +3,17 @@ import { claudeAdapter } from '../../src/adapters/claude.ts';
 import { cursorAdapter } from '../../src/adapters/cursor.ts';
 import { codexAdapter } from '../../src/adapters/codex.ts';
 import { geminiAdapter } from '../../src/adapters/gemini.ts';
+import { opencodeAdapter } from '../../src/adapters/opencode.ts';
+import { piAdapter } from '../../src/adapters/pi.ts';
 import { adapters, findAdapterById, selectAdapters } from '../../src/adapters/index.ts';
 import type { HookAdapter } from '../../src/adapters/base.ts';
 
 // ── Adapter registry ─────────────────────────────────────────
 
 describe('adapter registry', () => {
-	test('all four adapters registered', () => {
-		expect(adapters).toHaveLength(4);
-		expect(adapters.map((a) => a.id)).toEqual(['claude', 'cursor', 'codex', 'gemini']);
+	test('all adapters registered', () => {
+		expect(adapters).toHaveLength(6);
+		expect(adapters.map((a) => a.id)).toEqual(['claude', 'cursor', 'codex', 'gemini', 'opencode', 'pi']);
 	});
 
 	test('findAdapterById returns correct adapter', () => {
@@ -19,6 +21,8 @@ describe('adapter registry', () => {
 		expect(findAdapterById('cursor')).toBe(cursorAdapter);
 		expect(findAdapterById('codex')).toBe(codexAdapter);
 		expect(findAdapterById('gemini')).toBe(geminiAdapter);
+		expect(findAdapterById('opencode')).toBe(opencodeAdapter);
+		expect(findAdapterById('pi')).toBe(piAdapter);
 	});
 
 	test('findAdapterById returns undefined for unknown', () => {
@@ -26,7 +30,7 @@ describe('adapter registry', () => {
 	});
 
 	test('selectAdapters with no arg returns all', () => {
-		expect(selectAdapters()).toHaveLength(4);
+		expect(selectAdapters()).toHaveLength(6);
 	});
 
 	test('selectAdapters with specific agent returns single', () => {
@@ -36,6 +40,38 @@ describe('adapter registry', () => {
 
 	test('selectAdapters with unknown agent returns empty', () => {
 		expect(selectAdapters('vscode')).toHaveLength(0);
+	});
+});
+
+describe('ACP-capable agent adapters', () => {
+	test('OpenCode generates a fail-closed tool plugin', () => {
+		const result = opencodeAdapter.install({
+			url: 'http://127.0.0.1:9090',
+			outputDir: '/tmp/umbod',
+			timeoutSeconds: 30,
+		});
+		expect(result.assets[0]?.relativePath).toBe('opencode-umbod.ts');
+		expect(result.assets[0]?.contents).toContain('"tool.execute.before"');
+		expect(result.assets[0]?.contents).toContain('throw new Error(decision.reason)');
+		expect(result.config.settingsPath).toContain('.config/opencode/opencode.json');
+		expect(result.config.contents).toEqual({ plugin: ['/tmp/umbod/opencode-umbod.ts'] });
+	});
+
+	test('Pi generates a blocking tool_call extension', () => {
+		const result = piAdapter.install({ url: 'http://127.0.0.1:9090', outputDir: '/tmp/umbod', timeoutSeconds: 30 });
+		expect(result.assets[0]?.relativePath).toBe('pi-umbod.ts');
+		expect(result.assets[0]?.contents).toContain('pi.on("tool_call"');
+		expect(result.assets[0]?.contents).toContain('{ block: true, reason: decision.reason }');
+		expect(result.config.settingsPath).toContain('.pi/agent/settings.json');
+	});
+
+	test('normalizes OpenCode and Pi tool payloads', () => {
+		expect(
+			opencodeAdapter.normalizePayload({ tool_name: 'apply_patch', tool_input: { path: 'a.ts' }, cwd: '/repo' })
+		).toMatchObject({ agent: 'opencode', tool: 'edit', command: 'edit a.ts', workingDirectory: '/repo' });
+		expect(
+			piAdapter.normalizePayload({ tool_name: 'bash', tool_input: { command: 'git status' }, cwd: '/repo' })
+		).toMatchObject({ agent: 'pi', tool: 'bash', command: 'git status', workingDirectory: '/repo' });
 	});
 });
 
@@ -274,7 +310,14 @@ describe('gemini adapter', () => {
 // ── Shared install behavior ──────────────────────────────────
 
 describe('adapter install', () => {
-	const allAdapters: HookAdapter[] = [claudeAdapter, cursorAdapter, codexAdapter, geminiAdapter];
+	const allAdapters: HookAdapter[] = [
+		claudeAdapter,
+		cursorAdapter,
+		codexAdapter,
+		geminiAdapter,
+		opencodeAdapter,
+		piAdapter,
+	];
 
 	for (const adapter of allAdapters) {
 		test(`${adapter.id} install returns config with fileName and settingsPath`, () => {
@@ -296,8 +339,9 @@ describe('adapter install', () => {
 				platform: 'posix',
 				homeDir: '~',
 			});
-			expect(result.assets[0]?.relativePath).toEndWith('.sh');
-			expect(result.assets[0]?.contents).toStartWith('#!/usr/bin/env sh');
+			const extensionAdapter = adapter.id === 'opencode' || adapter.id === 'pi';
+			expect(result.assets[0]?.relativePath).toEndWith(extensionAdapter ? '.ts' : '.sh');
+			if (!extensionAdapter) expect(result.assets[0]?.contents).toStartWith('#!/usr/bin/env sh');
 			expect(JSON.stringify(result.config.contents)).toContain('~/.umbod/');
 			expect(result.config.settingsPath).not.toContain('\\');
 		});
