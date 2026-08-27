@@ -4,6 +4,7 @@ import { cursorAdapter } from '../../src/adapters/cursor.ts';
 import { codexAdapter } from '../../src/adapters/codex.ts';
 import { geminiAdapter } from '../../src/adapters/gemini.ts';
 import { opencodeAdapter } from '../../src/adapters/opencode.ts';
+import { otherAdapter } from '../../src/adapters/other.ts';
 import { piAdapter } from '../../src/adapters/pi.ts';
 import { adapters, findAdapterById, selectAdapters } from '../../src/adapters/index.ts';
 import type { HookAdapter } from '../../src/adapters/base.ts';
@@ -12,8 +13,8 @@ import type { HookAdapter } from '../../src/adapters/base.ts';
 
 describe('adapter registry', () => {
 	test('all adapters registered', () => {
-		expect(adapters).toHaveLength(6);
-		expect(adapters.map((a) => a.id)).toEqual(['claude', 'cursor', 'codex', 'gemini', 'opencode', 'pi']);
+		expect(adapters).toHaveLength(7);
+		expect(adapters.map((a) => a.id)).toEqual(['claude', 'cursor', 'codex', 'gemini', 'opencode', 'pi', 'other']);
 	});
 
 	test('findAdapterById returns correct adapter', () => {
@@ -23,6 +24,7 @@ describe('adapter registry', () => {
 		expect(findAdapterById('gemini')).toBe(geminiAdapter);
 		expect(findAdapterById('opencode')).toBe(opencodeAdapter);
 		expect(findAdapterById('pi')).toBe(piAdapter);
+		expect(findAdapterById('other')).toBe(otherAdapter);
 	});
 
 	test('findAdapterById returns undefined for unknown', () => {
@@ -30,7 +32,7 @@ describe('adapter registry', () => {
 	});
 
 	test('selectAdapters with no arg returns all', () => {
-		expect(selectAdapters()).toHaveLength(6);
+		expect(selectAdapters()).toHaveLength(7);
 	});
 
 	test('selectAdapters with specific agent returns single', () => {
@@ -72,6 +74,26 @@ describe('ACP-capable agent adapters', () => {
 		expect(
 			piAdapter.normalizePayload({ tool_name: 'bash', tool_input: { command: 'git status' }, cwd: '/repo' })
 		).toMatchObject({ agent: 'pi', tool: 'bash', command: 'git status', workingDirectory: '/repo' });
+	});
+});
+
+describe('custom agent adapter', () => {
+	test('generates portable wrappers and a direct integration guide', () => {
+		const result = otherAdapter.install({ url: 'http://127.0.0.1:9090', outputDir: '/tmp/umbod', timeoutSeconds: 30 });
+		expect(result.assets.map((asset) => asset.relativePath)).toEqual(['hook-other.sh', 'hook-other.ps1']);
+		expect(result.config.fileName).toBe('other.md');
+		expect(result.config.contents).toContain('"x-umbod-agent": "other"');
+		expect(result.config.contents).toContain('permissionDecision !== "allow"');
+	});
+
+	test('normalizes common custom-agent payload spellings', () => {
+		expect(
+			otherAdapter.normalizePayload({
+				toolName: 'read_file',
+				toolInput: { filePath: '/repo/a.ts' },
+				workingDirectory: '/repo',
+			})
+		).toMatchObject({ agent: 'other', tool: 'read', command: 'read /repo/a.ts', workingDirectory: '/repo' });
 	});
 });
 
@@ -317,6 +339,7 @@ describe('adapter install', () => {
 		geminiAdapter,
 		opencodeAdapter,
 		piAdapter,
+		otherAdapter,
 	];
 
 	for (const adapter of allAdapters) {
@@ -342,7 +365,7 @@ describe('adapter install', () => {
 			const extensionAdapter = adapter.id === 'opencode' || adapter.id === 'pi';
 			expect(result.assets[0]?.relativePath).toEndWith(extensionAdapter ? '.ts' : '.sh');
 			if (!extensionAdapter) expect(result.assets[0]?.contents).toStartWith('#!/usr/bin/env sh');
-			expect(JSON.stringify(result.config.contents)).toContain('~/.umbod/');
+			if (adapter.id !== 'other') expect(JSON.stringify(result.config.contents)).toContain('~/.umbod/');
 			expect(result.config.settingsPath).not.toContain('\\');
 		});
 	}

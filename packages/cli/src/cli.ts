@@ -57,7 +57,7 @@ function showHelp(): void {
 
 Usage:
   umbod start [--env path] [--port 9090] [--host 127.0.0.1]
-  umbod configure [--agent codex|cursor|claude|gemini] [--url http://127.0.0.1:9090] [--output .umbod]
+  umbod configure [--agent codex|cursor|claude|gemini|opencode|pi|other] [--url http://127.0.0.1:9090] [--output .umbod]
   umbod analyze tools|rules|coverage [--env path] [--since 14d] [--project dir] [--workspace id] [--agent name] [--json]
   umbod policy simulate <candidate.toml> [--env baseline.toml] [--database path] [--since 30d] [--limit 2000|--all] [--fail-on check] [--json]
   umbod policy test <manifest.toml>

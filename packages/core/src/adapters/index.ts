@@ -4,6 +4,7 @@ import { codexAdapter } from './codex.ts';
 import { cursorAdapter } from './cursor.ts';
 import { geminiAdapter } from './gemini.ts';
 import { opencodeAdapter } from './opencode.ts';
+import { otherAdapter } from './other.ts';
 import { piAdapter } from './pi.ts';
 
 export const adapters: HookAdapter[] = [
@@ -13,6 +14,7 @@ export const adapters: HookAdapter[] = [
 	geminiAdapter,
 	opencodeAdapter,
 	piAdapter,
+	otherAdapter,
 ];
 
 /** Returns all adapters, or only those matching the given agent id. */
