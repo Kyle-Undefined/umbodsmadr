@@ -18,6 +18,8 @@ When a call comes in, the engine classifies it (readonly, destructive, external,
 
 ## the manifest
 
+The meat and potatoes are below. For every selector, safe migration examples, Windows/WSL paths, operation IDs, and a review checklist, see [the policy authoring guide](docs/policy-authoring.md). [`umbod.example.toml`](umbod.example.toml) is a runnable starting point if you would rather edit something than read about it.
+
 ```toml
 [env]
 name = "dev"
@@ -35,15 +37,6 @@ destructive = "approve"
 external = "approve"
 unknown = "block"
 
-[rules]
-"git log *" = "allow"
-"ls *" = "allow"
-"rm *" = "approve"
-"git push *" = "approve"
-"* --force" = "approve"
-# Hidden file blocking, matches on Bash and Tool calls
-'/(^|\/)\.[^\s\/]+/' = "block"
-
 [[guard]]
 id = "credentials"
 paths = ["**/.env", "**/id_ed25519", "**/*.pem"]
@@ -52,10 +45,9 @@ paths = ["**/.env", "**/id_ed25519", "**/*.pem"]
 id = "repository-reads"
 decision = "allow"
 tools = ["read", "grep", "glob"]
-paths = ["/work/client-app/**"]
 paths_all = ["/work/client-app/**"] # require every affected path to stay inside
 classifications = ["readonly"]
-operations = ["filesystem.read"]
+operations = ["filesystem.read", "filesystem.search"]
 workspaces = ["client-production"]
 requires_all = true # set requires_any = true to OR selector kinds
 priority = 10
@@ -85,7 +77,14 @@ commands = ["git push --force *"]
 id = "normal-edits"
 decision = "allow"
 tools = ["edit", "write", "apply_patch"]
-paths = ["/work/client-app/**"]
+paths_all = ["/work/client-app/**"]
+
+[[rule]]
+id = "standalone-git-diff"
+decision = "allow"
+tools = ["bash"]
+components_all = ["git diff", "git diff *"]
+compound = false
 ```
 
 Legacy `[rules]` entries remain supported as wildcard patterns (`rm *`, `* --force`) or regex (`/^pattern$/flags`). Structured `[[rule]]` entries have stable IDs and may select `tools`, whole-invocation `commands`, parsed `components_any` / `components_all`, `compound`, `paths`, all-target `paths_all`, `classifications`, `agents`, trusted canonical `operations`, and effective `workspaces`. `components_any` requires one parsed shell component to match; `components_all` requires every component to match one of its patterns. `paths_all` requires every extracted target to stay inside the declared boundary and is the safer choice for multi-file edit allowances. Existing `commands` and `paths` retain their compatibility behavior. Selector kinds are ANDed by default; set `requires_any = true` to OR them. Values within one selector are always ORed. Higher `priority` runs first, with manifest order breaking ties. Structured rules run before the legacy table in the same scope.
@@ -105,6 +104,10 @@ While `umbod start` is running, saved manifest changes are reloaded automaticall
 Common shell pipelines and `&&`/`;` chains are tokenized without splitting quoted separators. Every component is classified and the strictest classification wins (`destructive`, then `external`, `stateful`, and `readonly`). Unsupported or ambiguous syntax such as command substitution, shell flow control, interpreter execution, or malformed quoting is classified as `unknown` and follows the configured unknown default.
 
 Whole-command legacy globs remain compatible and can consume compound suffixes. `umbod policy lint` warns about these patterns; migrate narrow shell allowances to component selectors or add `compound = false`.
+
+### upgrading existing rules
+
+No manifest rewrite is required: legacy `[rules]` and `[workspaces.rules]` remain supported. Before activating a candidate, run `umbod policy lint`, `umbod policy test`, and `umbod policy simulate`. The highest-priority migration is replacing narrow shell allows such as `"git diff *" = "allow"`, which can also match `git diff --check && git commit -m test`, with `components_all` plus `compound = false`. Use `paths_all` for edit allowances so one permitted file cannot hide a second target outside the workspace. The [policy authoring guide](docs/policy-authoring.md) explains the exact matching semantics and a complete upgrade workflow.
 
 ### policy simulation
 
@@ -229,6 +232,8 @@ Use the CLI simulator for custom filters, unbounded replay, JSON output, and CI-
 
 Umbod owns audit-database inspection, retention, cleanup, checkpointing, and compaction. Consumers such as Hlið must use the typed core methods, HTTP API, or CLI; they must not edit, delete, checkpoint, or vacuum Umbod SQLite files directly.
 
+The [database maintenance guide](docs/database-maintenance.md) has the full CLI, HTTP, TypeScript, receipt, locking, and scheduler setup. The short version is simple: Umbod owns the database, consumers ask Umbod to maintain it.
+
 Status and cleanup preview are read-only after the writable owner has initialized/migrated the schema:
 
 ```bash
@@ -333,6 +338,8 @@ Bun.serve({ port: 9090, fetch: (req) => umbod.fetch(req) ?? new Response('not fo
 ```
 
 `umbod.fetch` serves the same `/health` and `/api/*` contract as the CLI server (minus the dashboard), so generated hooks work unchanged against either. Approvals surface through `listPendingApprovals()` / `resolveApproval()`, or pass `approvalPrompt` to wire them into your own UI.
+
+Policy tooling is also available in process: `policyLint()` inspects the active manifest, `starterPolicyDraft()` derives a conservative candidate from history, and the exported `simulatePolicy`, `runManifestTests`, `lintPolicy`, `affectedPaths`, and `inferredOperation` helpers let a trusted host build its own review surface without duplicating matching semantics. Database consumers should use `databaseStatus()`, `previewDatabaseCleanup()`, receipt-bound `executeDatabaseCleanup()`, and `compactDatabase()`; see [the maintenance guide](docs/database-maintenance.md).
 
 For a host that only reads analytics, initialize or migrate the database once through `createUmbod` or `AuditLogStore`, then open a reader that cannot write:
 

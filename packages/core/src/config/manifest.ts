@@ -45,13 +45,41 @@ timeout = ${timeout}
 default_unknown = ${JSON.stringify(defaultUnknown)}
 approval_method = ${JSON.stringify(approvalMethod)}
 
-[rules]
-"git log *" = "allow"
-"ls *" = "allow"
-"rm *" = "approve"
-"git push *" = "approve"
-"* --force" = "approve"
-'/(^|\\/)\\.[^\\s\\/]+/' = "block"
+[[guard]]
+id = "hidden-files"
+paths = ["**/.*", "**/.*/**"]
+reason = "protect hidden files by default"
+
+[[rule]]
+id = "git-log"
+decision = "allow"
+tools = ["bash"]
+components_all = ["git log", "git log *"]
+compound = false
+
+[[rule]]
+id = "list-directory"
+decision = "allow"
+tools = ["bash"]
+components_all = ["ls", "ls *"]
+compound = false
+
+[[rule]]
+id = "remove-files"
+decision = "approve"
+tools = ["bash"]
+components_any = ["rm", "rm *"]
+
+[[rule]]
+id = "publish-git"
+decision = "approve"
+operations = ["git.push"]
+
+[[rule]]
+id = "force-options"
+decision = "approve"
+tools = ["bash"]
+components_any = ["* --force", "* --force-with-lease"]
 `;
 }
 

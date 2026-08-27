@@ -12,16 +12,36 @@ timeout = 30
 default_unknown = "approve"
 approval_method = "both" # web | cli | both
 
-[rules]
-# Hidden file blocking, matches on Bash and Tool calls
-'/(^|\/)\.[^\s\/]+/' = "block"
+[policy.defaults]
+readonly = "allow"
+stateful = "approve"
+destructive = "approve"
+external = "approve"
+unknown = "approve"
 
-"rm *" = "approve"
-"git push *" = "approve"
-"git reset --hard *" = "approve"
-"git clean -fd*" = "approve"
+[[guard]]
+id = "credentials"
+paths = ["**/.env", "**/auth.json", "**/id_ed25519", "**/*.pem"]
+reason = "credentials are never exposed to tools"
 
-"git status" = "allow"
+[[guard]]
+id = "irreversible-git"
+commands = ["git reset --hard *", "git clean -fd*", "git push --force *"]
+reason = "irreversible Git operations are blocked globally"
+
+[[rule]]
+id = "single-git-status"
+decision = "allow"
+tools = ["bash"]
+components_all = ["git status", "git status *"]
+compound = false
+reason = "allow only a standalone status command"
+
+[[rule]]
+id = "git-publication"
+decision = "approve"
+operations = ["git.push", "network.publish", "package.publish"]
+reason = "publication requires a person"
 
 # Workspaces are generic named policy scopes. Hosts may send workspaceId
 # directly; otherwise Umbod selects the longest matching working-directory root.
@@ -34,10 +54,36 @@ default_unknown = "block"
 "git push *" = "block"
 "terraform plan *" = "approve"
 
+[[workspaces.rule]]
+id = "repository-edits"
+decision = "allow"
+tools = ["edit", "write", "apply_patch"]
+paths_all = ["/work/client-app/**", 'C:\work\client-app\**']
+reason = "every affected file must remain inside this workspace"
+
 [[workspaces]]
 id = "personal-sandbox"
 roots = ["/work/sandbox"]
 default_unknown = "allow"
 
-[workspaces.rules]
-"git push origin scratch" = "allow"
+[[workspaces.rule]]
+id = "publish-scratch"
+decision = "allow"
+tools = ["bash"]
+components_all = ["git push origin scratch"]
+compound = false
+
+[audit]
+# A command default only. This does not schedule or automatically run cleanup.
+retention_days = 90
+compact_after_cleanup = false
+
+[[test]]
+id = "status-is-readable"
+call = { agent = "fixture", tool = "bash", command = "git status" }
+expect = "allow"
+
+[[test]]
+id = "compound-status-is-not-allowed-by-status-rule"
+call = { agent = "fixture", tool = "bash", command = "git status && git commit -m test" }
+expect = "approve"

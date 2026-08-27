@@ -71,15 +71,15 @@ Usage:
   umbod policy lint <manifest.toml> [--json] [--fail-on-warnings]
   umbod policy draft [--env baseline.toml] [--database path] [--limit 2000] [--max-rules 25] [--json]
   umbod database status [--env path|--database path] [--older-than-days 90] [--json]
-  umbod database cleanup --older-than-days 90 --dry-run [--env path|--database path] [--json]
-  umbod database cleanup --preview-receipt receipt --execute [--env path|--database path] [--json]
+  umbod database cleanup [--older-than-days 90] --dry-run [--env path|--database path] [--json]
+  umbod database cleanup --preview-receipt receipt --execute [--compact-after-cleanup] [--env path|--database path] [--json]
   umbod database compact --execute [--env path|--database path] [--json]
 
 Commands:
   start       Load a manifest, start the local server, and initialize SQLite.
   configure   Create configuration for agent settings files.
   analyze     Report tool usage, rule health, or transcript coverage.
-  policy      Simulate a candidate manifest against historical audit calls without activating it.
+  policy      Test, lint, draft, or simulate policy without activating a candidate manifest.
   database    Inspect, preview cleanup, explicitly prune, or compact the Umbod-owned audit database.
 `);
 }

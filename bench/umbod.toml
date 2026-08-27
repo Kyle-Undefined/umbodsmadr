@@ -7,6 +7,9 @@ default_unknown = "block"
 approval_method = "web"
 
 [rules]
+# This fixture intentionally benchmarks the legacy string-rule compatibility
+# path. New user manifests should prefer structured rules; see
+# docs/policy-authoring.md and umbod.example.toml.
 # Hidden file blocking, matches on Bash and Tool calls
 '/(^|\/)\.[^\s\/]+/' = "block"
 

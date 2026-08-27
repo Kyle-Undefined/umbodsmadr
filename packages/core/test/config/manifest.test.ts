@@ -27,8 +27,21 @@ describe('createDefaultManifestSource', () => {
 
 		expect(manifest.env).toEqual({ name: 'dev', version: '1.0.0', timeout: 30 });
 		expect(manifest.policy).toEqual({ default_unknown: 'block', approval_method: 'web' });
-		expect(manifest.rules['git push *']).toBe('approve');
-		expect(manifest.rules['/(^|\\/)\\.[^\\s\\/]+/']).toBe('block');
+		expect(manifest.rules).toEqual({});
+		expect(manifest.guards).toEqual([
+			expect.objectContaining({ id: 'hidden-files', decision: 'block', paths: ['**/.*', '**/.*/**'] }),
+		]);
+		expect(manifest.structuredRules).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					id: 'git-log',
+					decision: 'allow',
+					componentsAll: ['git log', 'git log *'],
+					compound: false,
+				}),
+				expect.objectContaining({ id: 'publish-git', decision: 'approve', operations: ['git.push'] }),
+			])
+		);
 	});
 
 	test('supports host-specific environment and approval defaults', async () => {
