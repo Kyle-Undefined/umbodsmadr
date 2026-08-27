@@ -114,7 +114,18 @@ umbod policy simulate ./candidate.toml \
   --fail-on unresolved-workspace
 ```
 
-Use `--all` for an explicitly unbounded replay, `--database` to select a different audit database, and `--json` for the complete report. Available failure checks are `blocked-to-allow`, `approve-to-allow`, `previously-denied-to-allow`, `unresolved-workspace`, and `truncated`. Stored historical outcomes, freshly replayed baseline decisions, and candidate decisions remain separate in the report.
+Use `--all` for an explicitly unbounded replay, `--database` to select a different audit database, and `--json` for the complete report. Full replay uses stable keyset batches rather than retaining the entire audit table in memory, but it can still take materially longer than the default 2,000-call sample. Available failure checks are `blocked-to-allow`, `approve-to-allow`, `previously-denied-to-allow`, `unresolved-workspace`, and `truncated`. Stored historical outcomes, freshly replayed baseline decisions, and candidate decisions remain separate in the report.
+
+For a release-gating replay across every eligible audit record:
+
+```bash
+umbod policy simulate ./candidate.toml \
+  --env ./umbod.toml \
+  --all \
+  --fail-on blocked-to-allow \
+  --fail-on previously-denied-to-allow \
+  --fail-on unresolved-workspace
+```
 
 Manifests may carry executable policy fixtures:
 
@@ -179,7 +190,7 @@ umbod start --env ~/policies/work.toml
 
 Pending approvals, full audit log, structured and legacy rules, active policy generation/reload health, rule analytics, and per-call policy provenance. Outcomes are labeled in theme: _Sanctioned_, _Outlawed_, _Vouched_, _Forbidden_, _In Moot_. Real-time updates use WebSocket with a reconnect refresh of policy status.
 
-The visible Policy Studio loads the active TOML source and supports an edit → validate/test → simulate → save-and-activate workflow. Simulation replays up to 2,000 recent audit calls without changing policy or audit data. Activation remains disabled until that exact editor content passes parsing, compilation, embedded tests, and simulation. Saving uses a source hash to reject stale editors, a same-directory atomic file replacement, rollback on activation failure, and the normal atomic policy reload. Bootstrap fields that require a process restart cannot be changed in Studio.
+The visible Policy Studio loads the active TOML source and supports an edit → validate/test → simulate → save-and-activate workflow. The default replay evaluates the latest 2,000 eligible audit calls; **All records (slow)** performs a full keyset-batched replay for release gating. Both modes are read-only and retain bounded representative examples for transition, safety, coverage, and per-rule drill-downs. Truncated samples are labeled explicitly, while a full replay reports the complete eligible-call count. Activation remains disabled until that exact editor content and selected replay mode pass parsing, compilation, embedded tests, and simulation. Saving uses a source hash to reject stale editors, a same-directory atomic file replacement, rollback on activation failure, and the normal atomic policy reload. Bootstrap fields that require a process restart cannot be changed in Studio.
 
 Use the CLI simulator for custom filters, unbounded replay, JSON output, and CI-style failure checks.
 
