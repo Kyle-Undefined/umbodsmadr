@@ -452,7 +452,7 @@ describe('dashboard activity updates', () => {
 		});
 	});
 
-	test('explains non-JSON Project Preview simulation failures', async () => {
+	test('explains non-JSON simulation failures without assuming the transport', async () => {
 		const harness = dashboardHarness({
 			fetch: async () => ({
 				ok: false,
@@ -466,7 +466,7 @@ describe('dashboard activity updates', () => {
 
 		await harness.store.runSimulation();
 
-		expect(harness.store.policySourceError).toContain('Project Preview relay may be unavailable');
+		expect(harness.store.policySourceError).toContain('check the server connection');
 		expect(harness.store.policySourceError).toContain('HTTP 500');
 	});
 

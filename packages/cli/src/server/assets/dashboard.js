@@ -97,7 +97,7 @@
 				label +
 					' returned a non-JSON response (HTTP ' +
 					response.status +
-					'). The Project Preview relay may be unavailable; reload the Preview and retry.'
+					'). Retry the request or check the server connection.'
 			);
 		}
 	}
