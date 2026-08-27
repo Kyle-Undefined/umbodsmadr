@@ -1,5 +1,7 @@
 import { Database } from 'bun:sqlite';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import { statfsSync, statSync } from 'node:fs';
+import { basename, dirname, resolve } from 'node:path';
 
 import type {
 	ApprovalHotspot,
@@ -22,10 +24,24 @@ import type {
 } from '../core/types.ts';
 import { normalizeSearchText, quoteFts5Literal } from '../utils/search.ts';
 import { FTS_SCHEMA, FTS_TRIGGER_NAMES, MIGRATIONS, SCHEMA, SCHEMA_VERSION } from './schema.ts';
+import type {
+	AuditCleanupExecution,
+	AuditCleanupPreview,
+	AuditRetentionPolicy,
+	CompactAuditDatabaseOptions,
+	DatabaseCompactionResult,
+	DatabaseFileSizes,
+	DatabaseMaintenanceState,
+	DatabaseMaintenanceStatus,
+	ExecuteAuditCleanupOptions,
+	MaintenanceAuditSample,
+} from './maintenance-types.ts';
 
 const VALID_DECISIONS = new Set<string>(['allow', 'block', 'approve']);
 const VALID_CLASSIFICATIONS = new Set<string>(['readonly', 'destructive', 'external', 'stateful', 'unknown']);
 const DEFAULT_BUSY_TIMEOUT_MS = 5_000;
+const MAX_RETENTION_DAYS = 36_500;
+const MAINTENANCE_SAMPLE_LIMIT = 20;
 
 export interface AuditLogConnectionOptions {
 	/** Time SQLite waits for a lock before returning SQLITE_BUSY. Default 5000. */
@@ -35,6 +51,8 @@ export interface AuditLogConnectionOptions {
 export interface AuditLogStoreOptions extends AuditLogConnectionOptions {
 	/** Opt in to persistent WAL mode during writable initialization. */
 	journalMode?: 'default' | 'wal';
+	/** Require an already-current schema and skip migrations/repairs. Used by read-only maintenance operations. */
+	schemaMode?: 'migrate' | 'require-current';
 }
 
 function finiteNumber(value: unknown, label: string): number {
@@ -171,6 +189,82 @@ function validatedBusyTimeout(value: number | undefined): number {
 	return timeout;
 }
 
+function validateRetentionPolicy(policy: AuditRetentionPolicy): Required<AuditRetentionPolicy> {
+	if (
+		!Number.isSafeInteger(policy.olderThanDays) ||
+		policy.olderThanDays < 1 ||
+		policy.olderThanDays > MAX_RETENTION_DAYS
+	) {
+		throw new Error(`olderThanDays must be an integer between 1 and ${MAX_RETENTION_DAYS}`);
+	}
+	if (policy.preservePendingApprovals !== undefined && policy.preservePendingApprovals !== true) {
+		throw new Error('preservePendingApprovals must be true');
+	}
+	return { olderThanDays: policy.olderThanDays, preservePendingApprovals: true };
+}
+
+function fileSize(filePath: string): number {
+	try {
+		return statSync(filePath).size;
+	} catch (error: unknown) {
+		if ((error as { code?: string }).code === 'ENOENT') return 0;
+		throw error;
+	}
+}
+
+function safeDatabasePath(databasePath: string): string {
+	const resolved = resolve(databasePath);
+	return `<redacted>/${basename(dirname(resolved))}/${basename(resolved)}`;
+}
+
+function approvalCounts(rows: Array<{ status: string; count: number }>): Record<ApprovalStatus, number> {
+	const counts: Record<ApprovalStatus, number> = { pending: 0, approved: 0, denied: 0 };
+	for (const row of rows) {
+		if (row.status === 'pending' || row.status === 'approved' || row.status === 'denied')
+			counts[row.status] = row.count;
+	}
+	return counts;
+}
+
+interface PreviewReceiptPayload {
+	version: 1;
+	cutoff: string;
+	olderThanDays: number;
+	revision: number;
+	fingerprint: string;
+}
+
+function encodePreviewReceipt(payload: PreviewReceiptPayload): string {
+	const encoded = Buffer.from(JSON.stringify(payload)).toString('base64url');
+	const digest = createHash('sha256').update(encoded).digest('base64url');
+	return `umbod-cleanup-v1.${encoded}.${digest}`;
+}
+
+// fallow-ignore-next-line complexity -- strict opaque-receipt parsing validates every untrusted field before deletion.
+function decodePreviewReceipt(receipt: string): PreviewReceiptPayload {
+	const [prefix, encoded, digest, extra] = receipt.split('.');
+	if (prefix !== 'umbod-cleanup-v1' || !encoded || !digest || extra !== undefined) {
+		throw new Error('invalid cleanup preview receipt');
+	}
+	const expected = createHash('sha256').update(encoded).digest('base64url');
+	if (digest !== expected) throw new Error('invalid cleanup preview receipt');
+	try {
+		const payload = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8')) as PreviewReceiptPayload;
+		if (
+			payload.version !== 1 ||
+			typeof payload.cutoff !== 'string' ||
+			!Number.isSafeInteger(payload.olderThanDays) ||
+			!Number.isSafeInteger(payload.revision) ||
+			typeof payload.fingerprint !== 'string'
+		) {
+			throw new Error('invalid');
+		}
+		return payload;
+	} catch {
+		throw new Error('invalid cleanup preview receipt');
+	}
+}
+
 function databaseObjectExists(database: Database, type: 'table' | 'trigger', name: string): boolean {
 	return database.query('SELECT 1 FROM sqlite_master WHERE type = ? AND name = ?').get(type, name) !== null;
 }
@@ -183,7 +277,12 @@ function hasRequiredColumns(database: Database, table: string, required: readonl
 }
 
 function validateReadableSchema(database: Database): void {
-	const requiredTables = ['audit_log', 'approval_requests'] as const;
+	const requiredTables = [
+		'audit_log',
+		'approval_requests',
+		'audit_maintenance_state',
+		'audit_maintenance_history',
+	] as const;
 	for (const table of requiredTables) {
 		if (!databaseObjectExists(database, 'table', table)) {
 			throw new Error(`audit database schema version is current but required table "${table}" is missing`);
@@ -873,13 +972,20 @@ export function openAuditLogReader(databasePath: string, options: AuditLogConnec
 }
 
 export class AuditLogStore extends AuditLogReader {
+	private readonly databasePath: string;
+	private maintenanceState: DatabaseMaintenanceState = 'idle';
+
 	constructor(databasePath: string, options: AuditLogStoreOptions = {}) {
 		const busyTimeout = validatedBusyTimeout(options.busyTimeoutMs);
 		const database = new Database(databasePath, { create: true, readwrite: true });
 		super(database);
+		this.databasePath = resolve(databasePath);
 
 		try {
 			database.exec(`PRAGMA busy_timeout = ${busyTimeout}`);
+			database.exec('PRAGMA foreign_keys = ON');
+			const foreignKeys = database.query('PRAGMA foreign_keys').get() as { foreign_keys: number };
+			if (Number(foreignKeys.foreign_keys) !== 1) throw new Error('failed to enable SQLite foreign-key enforcement');
 			const userVersion = this.userVersion();
 			if (userVersion > SCHEMA_VERSION) {
 				throw new Error(
@@ -892,34 +998,48 @@ export class AuditLogStore extends AuditLogReader {
 					throw new Error(`failed to enable WAL journal mode; SQLite returned "${row.journal_mode}"`);
 				}
 			}
-			const trigramSupported = supportsTrigramIndex(database);
-			const searchIndexWasReady = trigramSupported && hasUsableTrigramIndex(database);
-			database
-				.transaction(() => {
-					if (!trigramSupported) {
-						for (const trigger of FTS_TRIGGER_NAMES) database.exec(`DROP TRIGGER IF EXISTS ${trigger}`);
-					}
-					this.migrate(userVersion);
-					this.backfillCommandSearch();
-					database.exec(SCHEMA);
-					if (trigramSupported) {
-						database.exec(FTS_SCHEMA);
-						if (userVersion < 3 || !searchIndexWasReady) {
-							database.exec("INSERT INTO audit_log_command_fts(audit_log_command_fts) VALUES ('rebuild')");
-						}
-						if (!hasUsableTrigramIndex(database)) {
-							throw new Error('failed to initialize the optional FTS5 trigram search index');
-						}
-					}
-					database.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
-					validateReadableSchema(database);
-				})
-				.immediate();
-			if (trigramSupported) this.enableTrigramSearch();
+			this.initializeSchema(userVersion, options.schemaMode ?? 'migrate');
 		} catch (error: unknown) {
 			database.close();
 			throw error;
 		}
+	}
+
+	private initializeSchema(userVersion: number, mode: NonNullable<AuditLogStoreOptions['schemaMode']>): void {
+		if (mode === 'require-current') {
+			if (userVersion !== SCHEMA_VERSION) {
+				throw new Error(
+					`read-only database maintenance requires schema version ${SCHEMA_VERSION}; found ${userVersion}`
+				);
+			}
+			validateReadableSchema(this.database);
+			if (hasUsableTrigramIndex(this.database)) this.enableTrigramSearch();
+			return;
+		}
+		const trigramSupported = supportsTrigramIndex(this.database);
+		const searchIndexWasReady = trigramSupported && hasUsableTrigramIndex(this.database);
+		this.database
+			.transaction(() => {
+				if (!trigramSupported) {
+					for (const trigger of FTS_TRIGGER_NAMES) this.database.exec(`DROP TRIGGER IF EXISTS ${trigger}`);
+				}
+				this.migrate(userVersion);
+				this.backfillCommandSearch();
+				this.database.exec(SCHEMA);
+				if (trigramSupported) {
+					this.database.exec(FTS_SCHEMA);
+					if (userVersion < 3 || !searchIndexWasReady) {
+						this.database.exec("INSERT INTO audit_log_command_fts(audit_log_command_fts) VALUES ('rebuild')");
+					}
+					if (!hasUsableTrigramIndex(this.database)) {
+						throw new Error('failed to initialize the optional FTS5 trigram search index');
+					}
+				}
+				this.database.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+				validateReadableSchema(this.database);
+			})
+			.immediate();
+		if (trigramSupported) this.enableTrigramSearch();
 	}
 
 	private tableExists(name: string): boolean {
@@ -969,6 +1089,399 @@ export class AuditLogStore extends AuditLogReader {
 		for (const row of rows) update.run(normalizeSearchText(row.command), row.id);
 	}
 
+	private fileSizes(): DatabaseFileSizes {
+		return {
+			mainBytes: fileSize(this.databasePath),
+			walBytes: fileSize(`${this.databasePath}-wal`),
+			shmBytes: fileSize(`${this.databasePath}-shm`),
+		};
+	}
+
+	private maintenanceRevision(): number {
+		const row = this.database.query('SELECT revision FROM audit_maintenance_state WHERE id = 1').get() as {
+			revision: number;
+		};
+		return Number(row.revision);
+	}
+
+	private advanceMaintenanceRevision(timestamp: string): number {
+		const row = this.database
+			.query(
+				`UPDATE audit_maintenance_state
+         SET revision = revision + 1, updated_at = ?
+         WHERE id = 1
+         RETURNING revision`
+			)
+			.get(timestamp) as { revision: number };
+		return Number(row.revision);
+	}
+
+	private eligibleFingerprint(cutoff: string): string {
+		const hash = createHash('sha256');
+		let cursor = 0;
+		for (;;) {
+			const rows = this.database
+				.query(
+					`SELECT al.id, al.timestamp, COALESCE(ar.status, '') AS approval_status
+             FROM audit_log al
+             LEFT JOIN approval_requests ar ON ar.audit_log_id = al.id
+             WHERE al.id > ? AND al.timestamp < ?
+               AND NOT EXISTS (
+                 SELECT 1 FROM approval_requests pending
+                 WHERE pending.audit_log_id = al.id AND pending.status = 'pending'
+               )
+             ORDER BY al.id
+             LIMIT 1000`
+				)
+				.all(cursor, cutoff) as Array<{ id: number; timestamp: string; approval_status: string }>;
+			for (const row of rows) hash.update(`${row.id}\0${row.timestamp}\0${row.approval_status}\n`);
+			if (rows.length < 1000) break;
+			cursor = Number(rows.at(-1)?.id ?? cursor);
+		}
+		return hash.digest('hex');
+	}
+
+	private cutoffFor(policy: Required<AuditRetentionPolicy>, now: Date): string {
+		return new Date(now.getTime() - policy.olderThanDays * 24 * 60 * 60 * 1000).toISOString();
+	}
+
+	databaseStatus(policy?: AuditRetentionPolicy, now = new Date()): DatabaseMaintenanceStatus {
+		const validated = policy ? validateRetentionPolicy(policy) : undefined;
+		const cutoff = validated ? this.cutoffFor(validated, now) : null;
+		return this.withSnapshot(() => {
+			const totals = this.database
+				.query('SELECT COUNT(*) AS count, MIN(timestamp) AS oldest, MAX(timestamp) AS newest FROM audit_log')
+				.get() as { count: number; oldest: string | null; newest: string | null };
+			const approvals = approvalCounts(
+				this.database.query('SELECT status, COUNT(*) AS count FROM approval_requests GROUP BY status').all() as Array<{
+					status: string;
+					count: number;
+				}>
+			);
+			const eligible = cutoff
+				? (
+						this.database
+							.query(
+								`SELECT COUNT(*) AS count FROM audit_log al
+                 WHERE al.timestamp < ? AND NOT EXISTS (
+                   SELECT 1 FROM approval_requests ar
+                   WHERE ar.audit_log_id = al.id AND ar.status = 'pending'
+                 )`
+							)
+							.get(cutoff) as { count: number }
+					).count
+				: null;
+			const journal = this.database.query('PRAGMA journal_mode').get() as { journal_mode: string };
+			const pageSize = this.database.query('PRAGMA page_size').get() as { page_size: number };
+			const freeList = this.database.query('PRAGMA freelist_count').get() as { freelist_count: number };
+			const state = this.database.query('SELECT revision FROM audit_maintenance_state WHERE id = 1').get() as {
+				revision: number;
+			};
+			const lastMaintenance = this.database
+				.query('SELECT MAX(completed_at) AS completed_at FROM audit_maintenance_history')
+				.get() as { completed_at: string | null };
+			const estimatedReusableBytes = Number(pageSize.page_size) * Number(freeList.freelist_count);
+			const files = this.fileSizes();
+			const compactionRecommended = Number(freeList.freelist_count) > 0 || files.walBytes > 16 * 1024 * 1024;
+			return {
+				databasePath: safeDatabasePath(this.databasePath),
+				files,
+				auditRows: Number(totals.count),
+				oldestAuditTimestamp: totals.oldest,
+				newestAuditTimestamp: totals.newest,
+				approvals,
+				proposedCutoff: cutoff,
+				eligibleAuditRows: eligible === null ? null : Number(eligible),
+				journalMode: String(journal.journal_mode).toLowerCase(),
+				maintenanceState: this.maintenanceState,
+				maintenanceRevision: Number(state.revision),
+				lastMaintenanceAt: lastMaintenance.completed_at,
+				pageSizeBytes: Number(pageSize.page_size),
+				freeListPages: Number(freeList.freelist_count),
+				estimatedReusableBytes,
+				compactionRecommended,
+				compactionReason: compactionRecommended
+					? 'SQLite reports reusable pages or a sizable WAL; exact reclaimed bytes are only known after compaction.'
+					: 'SQLite reports no reusable pages and the WAL is not sizable.',
+			};
+		});
+	}
+
+	previewCleanup(policy: AuditRetentionPolicy, now = new Date()): AuditCleanupPreview {
+		const validated = validateRetentionPolicy(policy);
+		const cutoff = this.cutoffFor(validated, now);
+		return this.withSnapshot(() => {
+			const revision = this.maintenanceRevision();
+			const affected = this.database
+				.query(
+					`SELECT COUNT(*) AS eligible,
+                      MIN(al.timestamp) AS oldest,
+                      MAX(al.timestamp) AS newest
+             FROM audit_log al
+             WHERE al.timestamp < ? AND NOT EXISTS (
+               SELECT 1 FROM approval_requests pending
+               WHERE pending.audit_log_id = al.id AND pending.status = 'pending'
+             )`
+				)
+				.get(cutoff) as { eligible: number; oldest: string | null; newest: string | null };
+			const total = this.database.query('SELECT COUNT(*) AS count FROM audit_log').get() as { count: number };
+			const approvals = approvalCounts(
+				this.database
+					.query(
+						`SELECT ar.status, COUNT(*) AS count
+             FROM approval_requests ar JOIN audit_log al ON al.id = ar.audit_log_id
+             WHERE al.timestamp < ?
+               AND NOT EXISTS (
+                 SELECT 1 FROM approval_requests pending
+                 WHERE pending.audit_log_id = al.id AND pending.status = 'pending'
+               )
+             GROUP BY ar.status`
+					)
+					.all(cutoff) as Array<{ status: string; count: number }>
+			);
+			const pendingPreserved = (
+				this.database
+					.query(
+						`SELECT COUNT(*) AS count FROM approval_requests ar
+             JOIN audit_log al ON al.id = ar.audit_log_id
+             WHERE ar.status = 'pending' AND al.timestamp < ?`
+					)
+					.get(cutoff) as { count: number }
+			).count;
+			const rows = this.database
+				.query(
+					`SELECT al.id, al.agent, al.tool, al.command, al.timestamp, al.decision, al.classification,
+                    ar.status AS approval_status
+             FROM audit_log al LEFT JOIN approval_requests ar ON ar.audit_log_id = al.id
+             WHERE al.timestamp < ? AND NOT EXISTS (
+               SELECT 1 FROM approval_requests pending
+               WHERE pending.audit_log_id = al.id AND pending.status = 'pending'
+             )
+             ORDER BY al.id DESC LIMIT ?`
+				)
+				.all(cutoff, MAINTENANCE_SAMPLE_LIMIT) as Array<Record<string, unknown>>;
+			const samples: MaintenanceAuditSample[] = rows.map((row) => ({
+				id: Number(row.id),
+				agent: String(row.agent),
+				tool: String(row.tool),
+				command: String(row.command),
+				timestamp: String(row.timestamp),
+				decision: String(row.decision),
+				classification: String(row.classification),
+				...(row.approval_status ? { approvalStatus: String(row.approval_status) as ApprovalStatus } : {}),
+			}));
+			const fingerprint = this.eligibleFingerprint(cutoff);
+			return {
+				readOnly: true,
+				policy: validated,
+				cutoff,
+				previewedAt: now.toISOString(),
+				previewReceipt: encodePreviewReceipt({
+					version: 1,
+					cutoff,
+					olderThanDays: validated.olderThanDays,
+					revision,
+					fingerprint,
+				}),
+				eligibleAuditRows: Number(affected.eligible),
+				retainedAuditRows: Number(total.count) - Number(affected.eligible),
+				approvalRowsAffected: approvals,
+				pendingApprovalRowsPreserved: Number(pendingPreserved),
+				oldestAffectedTimestamp: affected.oldest,
+				newestAffectedTimestamp: affected.newest,
+				samples,
+				samplesTruncated: Number(affected.eligible) > samples.length,
+				estimated: false,
+				files: this.fileSizes(),
+				maintenanceRevision: revision,
+			};
+		});
+	}
+
+	executeCleanup(options: ExecuteAuditCleanupOptions, now = new Date()): AuditCleanupExecution {
+		if (options.execute !== true) throw new Error('cleanup execution requires execute: true');
+		if (this.maintenanceState !== 'idle') throw new Error(`database maintenance is already ${this.maintenanceState}`);
+		const receipt = decodePreviewReceipt(options.previewReceipt);
+		if (options.olderThanDays !== undefined && options.olderThanDays !== receipt.olderThanDays) {
+			throw new Error('olderThanDays does not match the cleanup preview receipt');
+		}
+		const startedAt = now.toISOString();
+		this.maintenanceState = 'cleanup';
+		try {
+			const result = this.database
+				.transaction(() => {
+					const currentRevision = this.maintenanceRevision();
+					if (
+						currentRevision !== receipt.revision ||
+						this.eligibleFingerprint(receipt.cutoff) !== receipt.fingerprint
+					) {
+						throw new Error('cleanup preview is stale; generate a new preview');
+					}
+					const pendingBefore = (
+						this.database
+							.query(
+								`SELECT COUNT(*) AS count FROM approval_requests ar
+                   JOIN audit_log al ON al.id = ar.audit_log_id
+                   WHERE ar.status = 'pending' AND al.timestamp < ?`
+							)
+							.get(receipt.cutoff) as { count: number }
+					).count;
+					const auditRowsBefore = (
+						this.database.query('SELECT COUNT(*) AS count FROM audit_log').get() as { count: number }
+					).count;
+					const approvalRows = approvalCounts(
+						this.database
+							.query(
+								`SELECT ar.status, COUNT(*) AS count
+                   FROM approval_requests ar JOIN audit_log al ON al.id = ar.audit_log_id
+                   WHERE al.timestamp < ? AND ar.status <> 'pending'
+                   GROUP BY ar.status`
+							)
+							.all(receipt.cutoff) as Array<{ status: string; count: number }>
+					);
+					this.database
+						.query(
+							`DELETE FROM audit_log AS al
+                 WHERE al.timestamp < ? AND NOT EXISTS (
+                   SELECT 1 FROM approval_requests pending
+                   WHERE pending.audit_log_id = al.id AND pending.status = 'pending'
+                 )`
+						)
+						.run(receipt.cutoff);
+					const foreignKeyProblems = this.database.query('PRAGMA foreign_key_check').all();
+					if (foreignKeyProblems.length > 0)
+						throw new Error('cleanup failed SQLite foreign-key consistency verification');
+					const orphan = this.database
+						.query(
+							`SELECT COUNT(*) AS count FROM approval_requests ar
+                 LEFT JOIN audit_log al ON al.id = ar.audit_log_id WHERE al.id IS NULL`
+						)
+						.get() as { count: number };
+					if (Number(orphan.count) !== 0) throw new Error('cleanup left orphaned approval rows');
+					if (hasUsableTrigramIndex(this.database)) {
+						this.database.exec("INSERT INTO audit_log_command_fts(audit_log_command_fts) VALUES ('integrity-check')");
+					}
+					const retained = this.database.query('SELECT COUNT(*) AS count FROM audit_log').get() as { count: number };
+					const deletedAuditRows = Number(auditRowsBefore) - Number(retained.count);
+					const completedAt = new Date().toISOString();
+					const history = this.database
+						.query(
+							`INSERT INTO audit_maintenance_history
+                   (operation, started_at, completed_at, cutoff, affected_rows, details_json)
+                 VALUES ('cleanup', ?, ?, ?, ?, ?) RETURNING id`
+						)
+						.get(
+							startedAt,
+							completedAt,
+							receipt.cutoff,
+							deletedAuditRows,
+							JSON.stringify({
+								previewRevision: receipt.revision,
+								olderThanDays: receipt.olderThanDays,
+								preservePendingApprovals: true,
+								approvedApprovalRows: approvalRows.approved,
+								deniedApprovalRows: approvalRows.denied,
+							})
+						) as { id: number };
+					const revision = this.advanceMaintenanceRevision(completedAt);
+					return {
+						destructive: true as const,
+						cutoff: receipt.cutoff,
+						startedAt,
+						completedAt,
+						deletedAuditRows,
+						retainedAuditRows: Number(retained.count),
+						deletedApprovalRows: { approved: approvalRows.approved, denied: approvalRows.denied },
+						preservedPendingApprovals: Number(pendingBefore),
+						maintenanceRevision: revision,
+						provenanceId: Number(history.id),
+						filesAfterCleanup: { mainBytes: 0, walBytes: 0, shmBytes: 0 },
+						compactionPerformed: false as const,
+						message: 'Logical rows were pruned. SQLite file sizes may not shrink until explicit compaction.',
+					};
+				})
+				.immediate();
+			this.noteMutation();
+			return { ...result, filesAfterCleanup: this.fileSizes() };
+		} finally {
+			this.maintenanceState = 'idle';
+		}
+	}
+
+	compactDatabase(options: CompactAuditDatabaseOptions, now = new Date()): DatabaseCompactionResult {
+		if (options.execute !== true) throw new Error('database compaction requires execute: true');
+		if (this.maintenanceState !== 'idle') throw new Error(`database maintenance is already ${this.maintenanceState}`);
+		this.maintenanceState = 'compaction';
+		const startedAt = now.toISOString();
+		try {
+			const filesBefore = this.fileSizes();
+			const journal = this.database.query('PRAGMA journal_mode').get() as { journal_mode: string };
+			const checkpointRow =
+				String(journal.journal_mode).toLowerCase() === 'wal'
+					? (this.database.query('PRAGMA wal_checkpoint(TRUNCATE)').get() as {
+							busy: number;
+							log: number;
+							checkpointed: number;
+						})
+					: { busy: 0, log: 0, checkpointed: 0 };
+			if (Number(checkpointRow.busy) !== 0) {
+				throw new Error('compaction refused because the WAL checkpoint reports active readers or writers');
+			}
+			const filesystem = statfsSync(dirname(this.databasePath));
+			const availableBytes = Number(filesystem.bavail) * Number(filesystem.bsize);
+			const requiredBytes = Math.max(filesBefore.mainBytes * 2, 16 * 1024 * 1024);
+			if (availableBytes < requiredBytes) {
+				throw new Error(
+					`compaction refused: ${availableBytes} bytes available but at least ${requiredBytes} bytes are required`
+				);
+			}
+			this.database.exec('VACUUM');
+			const completedAt = new Date().toISOString();
+			const provenance = this.database
+				.transaction(() => {
+					const history = this.database
+						.query(
+							`INSERT INTO audit_maintenance_history
+                   (operation, started_at, completed_at, cutoff, affected_rows, details_json)
+                 VALUES ('compaction', ?, ?, NULL, 0, ?) RETURNING id`
+						)
+						.get(
+							startedAt,
+							completedAt,
+							JSON.stringify({
+								journalMode: String(journal.journal_mode).toLowerCase(),
+								checkpoint: checkpointRow,
+								availableBytesBefore: availableBytes,
+								requiredBytes,
+							})
+						) as { id: number };
+					return { id: Number(history.id), revision: this.advanceMaintenanceRevision(completedAt) };
+				})
+				.immediate();
+			this.noteMutation();
+			return {
+				destructive: true,
+				startedAt,
+				completedAt,
+				journalMode: String(journal.journal_mode).toLowerCase(),
+				checkpoint: {
+					busy: Number(checkpointRow.busy),
+					logFrames: Number(checkpointRow.log),
+					checkpointedFrames: Number(checkpointRow.checkpointed),
+				},
+				filesBefore,
+				filesAfter: this.fileSizes(),
+				availableBytesBefore: availableBytes,
+				requiredBytes,
+				maintenanceRevision: provenance.revision,
+				provenanceId: provenance.id,
+				message: 'VACUUM rebuilt the main database; before/after sizes are exact filesystem observations.',
+			};
+		} finally {
+			this.maintenanceState = 'idle';
+		}
+	}
+
 	append(
 		call: ToolCall,
 		result: EvaluationResult,
@@ -995,6 +1508,7 @@ export class AuditLogStore extends AuditLogReader {
 				approvalRequestId = approvalRow.id;
 			}
 
+			this.advanceMaintenanceRevision(timestamp);
 			return { entryId: row.id, approvalRequestId };
 		})();
 		this.noteMutation();
@@ -1006,15 +1520,17 @@ export class AuditLogStore extends AuditLogReader {
 		status: Exclude<ApprovalStatus, 'pending'>,
 		resolvedAt = new Date().toISOString()
 	): boolean {
-		const result = this.database
-			.query(
-				`UPDATE approval_requests
+		const changed = this.database.transaction(() => {
+			const result = this.database
+				.query(
+					`UPDATE approval_requests
          SET status = ?, resolved_at = ?
          WHERE id = ? AND status = 'pending'`
-			)
-			.run(status, resolvedAt, id);
-
-		const changed = result.changes > 0;
+				)
+				.run(status, resolvedAt, id);
+			if (result.changes > 0) this.advanceMaintenanceRevision(resolvedAt);
+			return result.changes > 0;
+		})();
 		if (changed) this.noteMutation();
 		return changed;
 	}

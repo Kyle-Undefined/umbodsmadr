@@ -14,6 +14,13 @@ import type {
 	ToolCall,
 } from '../core/types.ts';
 import { AuditLogStore, type AuditLogStoreOptions } from '../db/audit-log.ts';
+import type {
+	AuditCleanupExecution,
+	AuditCleanupPreview,
+	AuditRetentionPolicy,
+	DatabaseCompactionResult,
+	DatabaseMaintenanceStatus,
+} from '../db/maintenance-types.ts';
 import { toPermissionDecision } from '../hooks/adapter-utils.ts';
 import { PolicyManager, type PolicyStatus } from '../policy/policy-manager.ts';
 import { parseManifestSource } from '../config/manifest.ts';
@@ -78,6 +85,10 @@ export interface Umbod {
 	listPendingApprovals(): ReturnType<AuditLogStore['listPendingApprovals']>;
 	/** Compute tool and rule reports against one consistent audit snapshot. */
 	analyticsSnapshot(options?: AnalyticsSnapshotQuery): ReturnType<typeof computeAnalyticsSnapshot>;
+	databaseStatus(policy?: AuditRetentionPolicy): DatabaseMaintenanceStatus;
+	previewDatabaseCleanup(policy: AuditRetentionPolicy): AuditCleanupPreview;
+	executeDatabaseCleanup(previewReceipt: string): AuditCleanupExecution;
+	compactDatabase(): DatabaseCompactionResult;
 	reloadPolicy(manifestPath: string): Promise<PolicyStatus>;
 	/**
 	 * Handles umbod API routes (/health, /api/*). Returns undefined for
@@ -547,6 +558,70 @@ export function createUmbod(options: UmbodOptions): Umbod {
 		}
 	}
 
+	function sameOriginMaintenanceMutation(req: Request): Response | undefined {
+		const origin = req.headers.get('origin');
+		if (origin !== null && origin !== new URL(req.url).origin) {
+			return Response.json({ ok: false, error: 'cross-origin database maintenance is not allowed' }, { status: 403 });
+		}
+		return undefined;
+	}
+
+	function retentionFromRecord(body: Record<string, unknown>): AuditRetentionPolicy {
+		if (typeof body.olderThanDays !== 'number') throw new Error('olderThanDays must be a number');
+		if (body.preservePendingApprovals !== undefined && body.preservePendingApprovals !== true) {
+			throw new Error('preservePendingApprovals must be true');
+		}
+		return { olderThanDays: body.olderThanDays, preservePendingApprovals: true };
+	}
+
+	// fallow-ignore-next-line complexity -- one bounded mutation router keeps origin, body, receipt, and execute gates together.
+	async function handleDatabasePost(req: Request, url: URL): Promise<Response> {
+		try {
+			const forbidden = sameOriginMaintenanceMutation(req);
+			if (forbidden) return forbidden;
+			const body = (await req.json()) as Record<string, unknown>;
+			if (url.pathname === '/api/database/cleanup/preview') {
+				return Response.json(auditLog.previewCleanup(retentionFromRecord(body)));
+			}
+			if (url.pathname === '/api/database/cleanup') {
+				if (body.execute !== true) throw new Error('cleanup execution requires execute: true');
+				if (typeof body.previewReceipt !== 'string') throw new Error('previewReceipt must be a string');
+				if (body.olderThanDays !== undefined && typeof body.olderThanDays !== 'number') {
+					throw new Error('olderThanDays must be a number');
+				}
+				return Response.json(
+					auditLog.executeCleanup({
+						previewReceipt: body.previewReceipt,
+						olderThanDays: body.olderThanDays as number | undefined,
+						execute: true,
+					})
+				);
+			}
+			if (url.pathname === '/api/database/compact') {
+				if (body.execute !== true) throw new Error('database compaction requires execute: true');
+				return Response.json(auditLog.compactDatabase({ execute: true }));
+			}
+			return Response.json({ ok: false, error: 'database maintenance route not found' }, { status: 404 });
+		} catch (error: unknown) {
+			const message = errorMessage(error);
+			return Response.json({ ok: false, error: message }, { status: message.includes('stale') ? 409 : 400 });
+		}
+	}
+
+	function handleDatabaseRoute(req: Request, url: URL): Response | Promise<Response> | undefined {
+		if (!url.pathname.startsWith('/api/database/')) return undefined;
+		if (url.pathname === '/api/database/status' && req.method === 'GET') {
+			try {
+				const value = url.searchParams.get('olderThanDays');
+				return Response.json(auditLog.databaseStatus(value === null ? undefined : { olderThanDays: Number(value) }));
+			} catch (error: unknown) {
+				return Response.json({ ok: false, error: errorMessage(error) }, { status: 400 });
+			}
+		}
+		if (req.method === 'POST') return handleDatabasePost(req, url);
+		return Response.json({ ok: false, error: 'method not allowed' }, { status: 405, headers: { allow: 'GET, POST' } });
+	}
+
 	function handleGet(url: URL): Response | Promise<Response> | undefined {
 		if (url.pathname === '/health') {
 			return handleHealth();
@@ -594,6 +669,8 @@ export function createUmbod(options: UmbodOptions): Umbod {
 
 	function handleFetch(req: Request): Response | Promise<Response> | undefined {
 		const url = new URL(req.url);
+		const databaseRoute = handleDatabaseRoute(req, url);
+		if (databaseRoute) return databaseRoute;
 		if (req.method === 'GET') return handleGet(url);
 		if (req.method === 'POST') return handlePost(req, url);
 		return undefined;
@@ -612,6 +689,10 @@ export function createUmbod(options: UmbodOptions): Umbod {
 		resolveApproval: (approvalRequestId, status) => auditLog.resolveApprovalRequest(approvalRequestId, status),
 		listPendingApprovals,
 		analyticsSnapshot: (snapshotOptions) => computeAnalyticsSnapshot(auditLog, policyManager.manifest, snapshotOptions),
+		databaseStatus: (policy) => auditLog.databaseStatus(policy),
+		previewDatabaseCleanup: (policy) => auditLog.previewCleanup(policy),
+		executeDatabaseCleanup: (previewReceipt) => auditLog.executeCleanup({ previewReceipt, execute: true }),
+		compactDatabase: () => auditLog.compactDatabase({ execute: true }),
 		reloadPolicy: (manifestPath) => policyManager.reload(manifestPath),
 		fetch: handleFetch,
 		close: () => auditLog.close(),

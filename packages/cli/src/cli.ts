@@ -4,6 +4,7 @@ import { errorMessage, logger, runConfigureCommand } from '@umbod/core';
 
 import { runStartCommand } from './commands/start.ts';
 import { runAnalyzeCommand, type AnalyzeTarget } from './commands/analyze.ts';
+import { runDatabaseCommand, type DatabaseAction } from './commands/database.ts';
 import { runPolicySimulateCommand, runPolicyTestCommand, type SimulationFailure } from './commands/policy.ts';
 
 function readFlag(args: string[], name: string): string | undefined {
@@ -61,12 +62,17 @@ Usage:
   umbod analyze tools|rules|coverage [--env path] [--since 14d] [--project dir] [--workspace id] [--agent name] [--json]
   umbod policy simulate <candidate.toml> [--env baseline.toml] [--database path] [--since 30d] [--limit 2000|--all] [--fail-on check] [--json]
   umbod policy test <manifest.toml>
+  umbod database status [--env path|--database path] [--older-than-days 90] [--json]
+  umbod database cleanup --older-than-days 90 --dry-run [--env path|--database path] [--json]
+  umbod database cleanup --preview-receipt receipt --execute [--env path|--database path] [--json]
+  umbod database compact --execute [--env path|--database path] [--json]
 
 Commands:
   start       Load a manifest, start the local server, and initialize SQLite.
   configure   Create configuration for agent settings files.
   analyze     Report tool usage, rule health, or transcript coverage.
   policy      Simulate a candidate manifest against historical audit calls without activating it.
+  database    Inspect, preview cleanup, explicitly prune, or compact the Umbod-owned audit database.
 `);
 }
 
@@ -167,6 +173,46 @@ async function runPolicyCli(args: string[]): Promise<void> {
 	}
 }
 
+function databaseAction(value: string | undefined): DatabaseAction {
+	if (value === 'status' || value === 'cleanup' || value === 'compact') return value;
+	throw new Error('database requires one of: status, cleanup, compact');
+}
+
+const DATABASE_VALUE_FLAGS = new Set(['--env', '--database', '--older-than-days', '--preview-receipt']);
+const DATABASE_BOOLEAN_FLAGS = new Set(['--dry-run', '--execute', '--json']);
+
+// fallow-ignore-next-line complexity -- strict validation walks the small database option grammar once.
+function validateDatabaseArgs(args: string[]): void {
+	const seen = new Set<string>();
+	for (let index = 0; index < args.length; index += 1) {
+		const flag = args[index] as string;
+		if (!DATABASE_VALUE_FLAGS.has(flag) && !DATABASE_BOOLEAN_FLAGS.has(flag)) {
+			throw new Error(`unknown database argument "${flag}"`);
+		}
+		if (seen.has(flag)) throw new Error(`duplicate database argument "${flag}"`);
+		seen.add(flag);
+		if (DATABASE_VALUE_FLAGS.has(flag)) {
+			const value = args[index + 1];
+			if (value === undefined || value.startsWith('--')) throw new Error(`missing value for ${flag}`);
+			index += 1;
+		}
+	}
+}
+
+async function runDatabaseCli(args: string[]): Promise<void> {
+	const [action, ...databaseArgs] = args;
+	validateDatabaseArgs(databaseArgs);
+	await runDatabaseCommand(databaseAction(action), {
+		envPath: readFlag(databaseArgs, '--env'),
+		databasePath: readFlag(databaseArgs, '--database'),
+		olderThanDays: readIntFlag(databaseArgs, '--older-than-days'),
+		dryRun: hasFlag(databaseArgs, '--dry-run'),
+		previewReceipt: readFlag(databaseArgs, '--preview-receipt'),
+		execute: hasFlag(databaseArgs, '--execute'),
+		json: hasFlag(databaseArgs, '--json'),
+	});
+}
+
 // fallow-ignore-next-line complexity -- the top-level hand-rolled command router is intentionally explicit.
 async function runCommand(command: string, args: string[]): Promise<void> {
 	if (command === 'start') {
@@ -187,6 +233,7 @@ async function runCommand(command: string, args: string[]): Promise<void> {
 	}
 	if (command === 'analyze') return runAnalyzeCli(args);
 	if (command === 'policy') return runPolicyCli(args);
+	if (command === 'database') return runDatabaseCli(args);
 	throw new Error(`unknown command "${command}"`);
 }
 

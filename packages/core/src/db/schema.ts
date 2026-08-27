@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 7;
+export const SCHEMA_VERSION = 8;
 
 export const SCHEMA = `
 CREATE TABLE IF NOT EXISTS audit_log (
@@ -65,6 +65,25 @@ CREATE INDEX IF NOT EXISTS audit_log_approval_hotspot_idx
          ELSE command END,
     id DESC
   );
+
+CREATE TABLE IF NOT EXISTS audit_maintenance_state (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  revision INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT NOT NULL
+);
+
+INSERT OR IGNORE INTO audit_maintenance_state (id, revision, updated_at)
+VALUES (1, 0, '1970-01-01T00:00:00.000Z');
+
+CREATE TABLE IF NOT EXISTS audit_maintenance_history (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  operation TEXT NOT NULL,
+  started_at TEXT NOT NULL,
+  completed_at TEXT NOT NULL,
+  cutoff TEXT,
+  affected_rows INTEGER NOT NULL DEFAULT 0,
+  details_json TEXT NOT NULL
+);
 `;
 
 export const FTS_SCHEMA = `
@@ -138,4 +157,5 @@ export const MIGRATIONS: Record<number, MigrationStatement[]> = {
 	5: [{ sql: 'ALTER TABLE audit_log ADD COLUMN operation TEXT', addsColumn: 'operation' }],
 	6: [{ sql: 'ALTER TABLE audit_log ADD COLUMN matched_rule_mode TEXT', addsColumn: 'matched_rule_mode' }],
 	7: [{ sql: 'ALTER TABLE audit_log ADD COLUMN matched_selectors_json TEXT', addsColumn: 'matched_selectors_json' }],
+	8: [],
 };

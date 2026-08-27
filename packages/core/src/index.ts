@@ -12,6 +12,18 @@ export type {
 
 export { AuditLogReader, AuditLogStore, openAuditLogReader } from './db/audit-log.ts';
 export type { AuditLogConnectionOptions, AuditLogStoreOptions } from './db/audit-log.ts';
+export type {
+	AuditCleanupExecution,
+	AuditCleanupPreview,
+	AuditRetentionPolicy,
+	CompactAuditDatabaseOptions,
+	DatabaseCompactionResult,
+	DatabaseFileSizes,
+	DatabaseMaintenanceState,
+	DatabaseMaintenanceStatus,
+	ExecuteAuditCleanupOptions,
+	MaintenanceAuditSample,
+} from './db/maintenance-types.ts';
 export { PolicyEngine } from './policy/engine.ts';
 export {
 	isAbsoluteWorkspaceRoot,

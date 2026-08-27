@@ -201,6 +201,49 @@ The visible Policy Studio loads the active TOML source and supports an edit → 
 
 Use the CLI simulator for custom filters, unbounded replay, JSON output, and CI-style failure checks.
 
+## audit database maintenance
+
+Umbod owns audit-database inspection, retention, cleanup, checkpointing, and compaction. Consumers such as Hlið must use the typed core methods, HTTP API, or CLI; they must not edit, delete, checkpoint, or vacuum Umbod SQLite files directly.
+
+Status and cleanup preview are read-only after the writable owner has initialized/migrated the schema:
+
+```bash
+umbod database status --older-than-days 90 --json
+umbod database cleanup --older-than-days 90 --dry-run --json
+```
+
+Preview resolves an exact UTC cutoff, preserves every pending approval, returns exact eligible/retained row counts, bounded representative samples, current main/WAL/SHM sizes, and an opaque receipt. File sizes are exact filesystem observations. `estimatedReusableBytes` is only SQLite's page-size × freelist-count estimate; it is not a promise of bytes that compaction will reclaim.
+
+Cleanup is destructive and requires the exact receipt. JSON/automation mode also requires the explicit execution flag:
+
+```bash
+umbod database cleanup \
+  --preview-receipt 'umbod-cleanup-v1.…' \
+  --execute \
+  --json
+```
+
+Receipts bind the cutoff, eligible-row fingerprint, and durable maintenance revision. Any intervening audit insertion, approval resolution, or maintenance mutation makes the receipt stale. Cleanup takes an immediate SQLite transaction, rechecks the receipt under the write lock, deletes only rows without pending approvals, verifies foreign keys and FTS integrity, and records provenance in `audit_maintenance_history` without creating an audit call. Resolved approval rows cascade through the declared foreign key. A failure rolls the transaction back.
+
+Logical cleanup does not claim to shrink the database file. Physical compaction is separate and explicit:
+
+```bash
+umbod database compact --execute --json
+```
+
+Compaction runs an owning-connection WAL truncate checkpoint, refuses active readers/writers, checks for conservative temporary free space, and then runs SQLite `VACUUM`. It reports exact before/after main and WAL sizes. Umbod does not change `auto_vacuum` on existing databases and does not run cleanup or compaction at startup or in the background. A manifest retention default is intentionally omitted for now: without a separately authorized schedule it would add configuration without changing the explicit preview/execute safety flow.
+
+The HTTP equivalents are:
+
+- `GET /api/database/status?olderThanDays=90`
+- `POST /api/database/cleanup/preview` with `{ "olderThanDays": 90, "preservePendingApprovals": true }`
+- `POST /api/database/cleanup` with `{ "previewReceipt": "…", "execute": true }`
+- `POST /api/database/compact` with `{ "execute": true }`
+
+Browser mutations reject cross-origin requests. Umbod core does not add a bearer-token system: the embedding host or local server deployment remains responsible for authenticating and authorizing callers, and Hlið retains its shared approval boundary before invoking destructive Umbod operations. Same-origin checking is a CSRF boundary, not caller authentication.
+
+Stable consumer types are exported from `@umbod/core`: `DatabaseMaintenanceStatus`, `AuditCleanupPreview`, `AuditCleanupExecution`, `DatabaseCompactionResult`, `AuditRetentionPolicy`, and their supporting file-size/option types.
+
 ## platform
 
 Windows, and Linux (including WSL)
