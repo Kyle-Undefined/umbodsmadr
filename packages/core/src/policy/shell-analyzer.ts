@@ -35,7 +35,7 @@ export interface ShellOperationAnalysis {
 }
 
 // fallow-ignore-next-line complexity -- bounded quote-aware tokenizer keeps shell state in one auditable pass.
-function splitCompound(command: string): string[] | undefined {
+export function splitShellCommand(command: string): string[] | undefined {
 	const parts: string[] = [];
 	let current = '';
 	let quote: "'" | '"' | undefined;
@@ -85,7 +85,7 @@ function classifyComponent(command: string): Exclude<CallClassification, 'unknow
 }
 
 export function analyzeShellCommand(command: string): ShellOperationAnalysis {
-	const parts = splitCompound(command.trim());
+	const parts = splitShellCommand(command.trim());
 	if (!parts) return { components: [], compound: false, classification: 'unknown' };
 	const components: ShellOperationAnalysis['components'] = [];
 	for (const part of parts) {

@@ -1,6 +1,6 @@
 import type { ApprovalDecision, ToolCall } from '../core/types.ts';
 import { isRecord } from '../utils/guards.ts';
-import { inferredToolOperation } from '../policy/operations.ts';
+import { inferredOperation } from '../policy/operations.ts';
 
 interface NormalizeOptions {
 	toolPaths: string[];
@@ -98,7 +98,7 @@ export function normalizePayload(agent: string, payload: unknown, options: Norma
 	return {
 		agent,
 		tool,
-		operation: inferredToolOperation(tool),
+		operation: inferredOperation(tool, command),
 		command,
 		args,
 		workingDirectory: options.workingDirectoryPaths ? firstString(payload, options.workingDirectoryPaths) : undefined,

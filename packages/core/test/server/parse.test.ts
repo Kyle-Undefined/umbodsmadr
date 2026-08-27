@@ -19,6 +19,7 @@ describe('parseEvaluatePayload', () => {
 		expect(call.agent).toBe('claude');
 		expect(call.tool).toBe('bash');
 		expect(call.command).toBe('git status');
+		expect(call.operation).toBe('git.read');
 		expect(call.args).toEqual(['--short']);
 		expect(call.workingDirectory).toBe('/home/user/project');
 		expect(call.workspaceId).toBe('client');

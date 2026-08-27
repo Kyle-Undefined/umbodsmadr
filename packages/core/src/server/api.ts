@@ -4,6 +4,7 @@ import { computeCoverage, scopeCoverageSources } from '../analytics/coverage.ts'
 import { computeAnalyticsSnapshot } from '../analytics/snapshot.ts';
 import { computeToolUsage } from '../analytics/tool-usage.ts';
 import { simulatePolicy } from '../analytics/policy-simulation.ts';
+import { generateStarterPolicyDraft, type StarterPolicyDraft } from '../analytics/starter-policy.ts';
 import type { AnalyticsSnapshotQuery, AuditFilter } from '../analytics/types.ts';
 import type {
 	ApprovalDecision,
@@ -25,11 +26,13 @@ import { toPermissionDecision } from '../hooks/adapter-utils.ts';
 import { PolicyManager, type PolicyStatus } from '../policy/policy-manager.ts';
 import { parseManifestSource } from '../config/manifest.ts';
 import { runManifestTests } from '../policy/manifest-tests.ts';
+import { lintPolicy, type PolicyLintFinding } from '../policy/policy-lint.ts';
 import { resolveTimeParam } from '../utils/duration.ts';
 import { errorMessage } from '../utils/errors.ts';
 import { logger } from '../utils/logger.ts';
 import type { SessionLogSource } from '../sessions/types.ts';
 import { parseEvaluatePayload, resolveAgentId } from './parse.ts';
+import { inferredOperation } from '../policy/operations.ts';
 
 export interface ActivityEntry extends AuditEntry {
 	id: number;
@@ -85,6 +88,8 @@ export interface Umbod {
 	listPendingApprovals(): ReturnType<AuditLogStore['listPendingApprovals']>;
 	/** Compute tool and rule reports against one consistent audit snapshot. */
 	analyticsSnapshot(options?: AnalyticsSnapshotQuery): ReturnType<typeof computeAnalyticsSnapshot>;
+	starterPolicyDraft(options?: { limit?: number; maxRules?: number }): StarterPolicyDraft;
+	policyLint(): PolicyLintFinding[];
 	databaseStatus(policy?: AuditRetentionPolicy): DatabaseMaintenanceStatus;
 	previewDatabaseCleanup(policy: AuditRetentionPolicy): AuditCleanupPreview;
 	executeDatabaseCleanup(previewReceipt: string): AuditCleanupExecution;
@@ -284,9 +289,10 @@ export function createUmbod(options: UmbodOptions): Umbod {
 	}
 
 	async function authorize(call: ToolCall, callOptions: AuthorizeOptions = {}): Promise<AuthorizationResult> {
-		const evaluation = policyManager.evaluate(call);
+		const normalizedCall = call.operation ? call : { ...call, operation: inferredOperation(call.tool, call.command) };
+		const evaluation = policyManager.evaluate(normalizedCall);
 		const result = evaluation.result;
-		const entry = publishEntry(call, result, evaluation.status);
+		const entry = publishEntry(normalizedCall, result, evaluation.status);
 		let decision: Exclude<ApprovalDecision, 'approve'>;
 
 		if (result.decision !== 'approve') {
@@ -297,13 +303,13 @@ export function createUmbod(options: UmbodOptions): Umbod {
 			auditLog.resolveApprovalRequest(entry.approvalRequestId, 'approved');
 			decision = 'allow';
 		} else if (callOptions.approvalPrompt) {
-			const prompted = await callOptions.approvalPrompt(call, result.reason);
+			const prompted = await callOptions.approvalPrompt(normalizedCall, result.reason);
 			auditLog.resolveApprovalRequest(entry.approvalRequestId, decisionToApprovalStatus(prompted));
 			decision = prompted === 'allow' ? 'allow' : 'block';
 		} else {
 			const resolved = await resolveApprovalDecision(
 				entry.approvalRequestId,
-				call,
+				normalizedCall,
 				result.reason,
 				evaluation.manifest.policy.approval_method,
 				configuredApprovalTimeoutMs ?? evaluation.manifest.env.timeout * 1000
@@ -642,6 +648,22 @@ export function createUmbod(options: UmbodOptions): Umbod {
 		if (url.pathname === '/api/policy/status') {
 			return Response.json(policyManager.status());
 		}
+		if (url.pathname === '/api/policy/lint') {
+			return Response.json({ findings: lintPolicy(policyManager.manifest) });
+		}
+		if (url.pathname === '/api/policy/draft') {
+			try {
+				return Response.json(
+					generateStarterPolicyDraft(auditLog, {
+						limit: parseIntParam(url, 'limit'),
+						maxRules: parseIntParam(url, 'maxRules'),
+						name: `${policyManager.manifest.env.name}-draft`,
+					})
+				);
+			} catch (error: unknown) {
+				return Response.json({ ok: false, error: errorMessage(error) }, { status: 400 });
+			}
+		}
 
 		return handleAnalytics(url);
 	}
@@ -689,6 +711,9 @@ export function createUmbod(options: UmbodOptions): Umbod {
 		resolveApproval: (approvalRequestId, status) => auditLog.resolveApprovalRequest(approvalRequestId, status),
 		listPendingApprovals,
 		analyticsSnapshot: (snapshotOptions) => computeAnalyticsSnapshot(auditLog, policyManager.manifest, snapshotOptions),
+		starterPolicyDraft: (draftOptions) =>
+			generateStarterPolicyDraft(auditLog, { ...draftOptions, name: `${policyManager.manifest.env.name}-draft` }),
+		policyLint: () => lintPolicy(policyManager.manifest),
 		databaseStatus: (policy) => auditLog.databaseStatus(policy),
 		previewDatabaseCleanup: (policy) => auditLog.previewCleanup(policy),
 		executeDatabaseCleanup: (previewReceipt) => auditLog.executeCleanup({ previewReceipt, execute: true }),

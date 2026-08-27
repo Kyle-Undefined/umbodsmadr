@@ -5,7 +5,13 @@ import { errorMessage, logger, runConfigureCommand } from '@umbod/core';
 import { runStartCommand } from './commands/start.ts';
 import { runAnalyzeCommand, type AnalyzeTarget } from './commands/analyze.ts';
 import { runDatabaseCommand, type DatabaseAction } from './commands/database.ts';
-import { runPolicySimulateCommand, runPolicyTestCommand, type SimulationFailure } from './commands/policy.ts';
+import {
+	runPolicyLintCommand,
+	runPolicyDraftCommand,
+	runPolicySimulateCommand,
+	runPolicyTestCommand,
+	type SimulationFailure,
+} from './commands/policy.ts';
 
 function readFlag(args: string[], name: string): string | undefined {
 	const index = args.indexOf(name);
@@ -62,6 +68,8 @@ Usage:
   umbod analyze tools|rules|coverage [--env path] [--since 14d] [--project dir] [--workspace id] [--agent name] [--json]
   umbod policy simulate <candidate.toml> [--env baseline.toml] [--database path] [--since 30d] [--limit 2000|--all] [--fail-on check] [--json]
   umbod policy test <manifest.toml>
+  umbod policy lint <manifest.toml> [--json] [--fail-on-warnings]
+  umbod policy draft [--env baseline.toml] [--database path] [--limit 2000] [--max-rules 25] [--json]
   umbod database status [--env path|--database path] [--older-than-days 90] [--json]
   umbod database cleanup --older-than-days 90 --dry-run [--env path|--database path] [--json]
   umbod database cleanup --preview-receipt receipt --execute [--env path|--database path] [--json]
@@ -150,8 +158,35 @@ async function runPolicyCli(args: string[]): Promise<void> {
 		if (report.failed > 0) process.exitCode = 2;
 		return;
 	}
+	if (action === 'lint' && candidatePath && !candidatePath.startsWith('--')) {
+		const allowed = new Set(['--json', '--fail-on-warnings']);
+		for (const argument of policyArgs)
+			if (!allowed.has(argument)) throw new Error(`unknown policy lint argument "${argument}"`);
+		const findings = await runPolicyLintCommand(candidatePath, hasFlag(policyArgs, '--json'));
+		if (findings.length > 0 && hasFlag(policyArgs, '--fail-on-warnings')) process.exitCode = 2;
+		return;
+	}
+	if (action === 'draft') {
+		const draftArgs = candidatePath === undefined ? policyArgs : [candidatePath, ...policyArgs];
+		const valueFlags = new Set(['--env', '--database', '--limit', '--max-rules']);
+		for (let index = 0; index < draftArgs.length; index += 1) {
+			const flag = draftArgs[index] as string;
+			if (flag === '--json') continue;
+			if (!valueFlags.has(flag)) throw new Error(`unknown policy draft argument "${flag}"`);
+			if (draftArgs[index + 1] === undefined) throw new Error(`missing value for ${flag}`);
+			index += 1;
+		}
+		await runPolicyDraftCommand({
+			baselinePath: readFlag(draftArgs, '--env'),
+			databasePath: readFlag(draftArgs, '--database'),
+			limit: readIntFlag(draftArgs, '--limit'),
+			maxRules: readIntFlag(draftArgs, '--max-rules'),
+			json: hasFlag(draftArgs, '--json'),
+		});
+		return;
+	}
 	if (action !== 'simulate' || !candidatePath || candidatePath.startsWith('--')) {
-		throw new Error('policy requires: policy simulate <candidate.toml> or policy test <manifest.toml>');
+		throw new Error('policy requires: policy simulate, policy test, or policy lint with a manifest path');
 	}
 	validatePolicyArgs(policyArgs);
 	const { failed } = await runPolicySimulateCommand(candidatePath, {
@@ -179,7 +214,7 @@ function databaseAction(value: string | undefined): DatabaseAction {
 }
 
 const DATABASE_VALUE_FLAGS = new Set(['--env', '--database', '--older-than-days', '--preview-receipt']);
-const DATABASE_BOOLEAN_FLAGS = new Set(['--dry-run', '--execute', '--json']);
+const DATABASE_BOOLEAN_FLAGS = new Set(['--dry-run', '--execute', '--json', '--compact-after-cleanup']);
 
 // fallow-ignore-next-line complexity -- strict validation walks the small database option grammar once.
 function validateDatabaseArgs(args: string[]): void {
@@ -210,6 +245,7 @@ async function runDatabaseCli(args: string[]): Promise<void> {
 		previewReceipt: readFlag(databaseArgs, '--preview-receipt'),
 		execute: hasFlag(databaseArgs, '--execute'),
 		json: hasFlag(databaseArgs, '--json'),
+		compactAfterCleanup: hasFlag(databaseArgs, '--compact-after-cleanup') ? true : undefined,
 	});
 }
 

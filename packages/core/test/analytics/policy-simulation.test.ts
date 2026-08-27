@@ -59,6 +59,24 @@ describe('policy simulation', () => {
 		});
 	});
 
+	test('includes lint and derived matching evidence in raw drill-down examples', () => {
+		const baseline = makeManifest();
+		const candidate = makeManifest({ rules: { 'git diff *': 'allow' } });
+		record(baseline, {
+			command: 'git diff --check && git commit -m test',
+			operation: 'git.commit',
+			inputs: { tool_input: { path: 'src/app.ts' } },
+		});
+		const result = simulatePolicy(baseline, candidate, store);
+		expect(result.lint).toContainEqual(expect.objectContaining({ code: 'compound-prefix-allow' }));
+		expect(result.policyChangeExamples[0]).toMatchObject({
+			operation: 'git.commit',
+			shellComponents: ['git diff --check', 'git commit -m test'],
+			affectedPaths: [expect.objectContaining({ path: 'src/app.ts' })],
+			candidateReason: expect.stringContaining('git diff *'),
+		});
+	});
+
 	test('replays persisted trusted operation metadata through candidate selectors', () => {
 		const baseline = makeManifest({ policy: { default_unknown: 'block', approval_method: 'web' } });
 		const candidate = makeManifest({
@@ -70,6 +88,18 @@ describe('policy simulation', () => {
 		const result = simulatePolicy(baseline, candidate, store);
 		expect(result.transitions).toEqual({ 'block->allow': 1 });
 		expect(result.policyChangeExamples[0]?.candidateMatchedRule).toBe('host-reads');
+	});
+
+	test('backfills canonical operations for historical shell calls during replay', () => {
+		const baseline = makeManifest({ policy: { default_unknown: 'approve', approval_method: 'web' } });
+		const candidate = makeManifest({
+			policy: { default_unknown: 'approve', approval_method: 'web' },
+			structuredRules: [{ id: 'commits', decision: 'block', operations: ['git.commit'] }],
+		});
+		record(baseline, { command: 'git commit -m test' });
+		const result = simulatePolicy(baseline, candidate, store);
+		expect(result.transitions).toEqual({ 'approve->block': 1 });
+		expect(result.policyChangeExamples[0]?.operation).toBe('git.commit');
 	});
 
 	test('reports newly covered calls and selector-aware shadowed rules', () => {

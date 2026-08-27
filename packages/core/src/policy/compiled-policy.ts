@@ -9,6 +9,8 @@ import type {
 } from '../core/types.ts';
 import { matchesPattern } from './rule-matcher.ts';
 import { ruleMatchCandidates, rulePathCandidates } from './rule-candidates.ts';
+import { analyzeShellCommand } from './shell-analyzer.ts';
+import { inferredOperation } from './operations.ts';
 
 export interface CompiledPolicyMatch {
 	id: string;
@@ -27,6 +29,8 @@ interface EvaluationInputs {
 	classification: CallClassification;
 	commands: string[];
 	paths: string[];
+	components: string[];
+	compound: boolean;
 }
 
 function matchesAny(values: string[], patterns: string[]): boolean {
@@ -36,7 +40,7 @@ function matchesAny(values: string[], patterns: string[]): boolean {
 function matchesAnyPath(values: string[], patterns: string[]): boolean {
 	return values.some((value) =>
 		patterns.some((rawPattern) => {
-			const pattern = rawPattern.replaceAll('\\', '/');
+			const pattern = /^\/.+\/[gimsuy]*$/.test(rawPattern) ? rawPattern : rawPattern.replaceAll('\\', '/');
 			return matchesPattern(value, pattern) || (pattern.startsWith('**/') && matchesPattern(value, pattern.slice(3)));
 		})
 	);
@@ -60,9 +64,29 @@ function matchedSelectorKinds(rule: StructuredRule | PolicyGuard, inputs: Evalua
 			optionalSelectorMatches(rule.commands, (pattern) => matchesAny(inputs.commands, [pattern])),
 		],
 		[
+			'components_any',
+			rule.componentsAny !== undefined,
+			optionalSelectorMatches(rule.componentsAny, (pattern) => matchesAny(inputs.components, [pattern])),
+		],
+		[
+			'components_all',
+			rule.componentsAll !== undefined,
+			rule.componentsAll !== undefined &&
+				inputs.components.length > 0 &&
+				inputs.components.every((component) => matchesAny([component], rule.componentsAll as string[])),
+		],
+		['compound', rule.compound !== undefined, rule.compound === inputs.compound],
+		[
 			'paths',
 			rule.paths !== undefined,
 			optionalSelectorMatches(rule.paths, (pattern) => matchesAnyPath(inputs.paths, [pattern])),
+		],
+		[
+			'paths_all',
+			rule.pathsAll !== undefined,
+			rule.pathsAll !== undefined &&
+				inputs.paths.length > 0 &&
+				inputs.paths.every((path) => matchesAnyPath([path], rule.pathsAll as string[])),
 		],
 		[
 			'classifications',
@@ -163,6 +187,20 @@ export interface CompiledPolicy {
 
 export function compilePolicy(manifest: Manifest): CompiledPolicy {
 	const usage = new Map<string, number>();
+	const inputCache = new WeakMap<ToolCall, Map<CallClassification, EvaluationInputs>>();
+	const structuredEntries = [
+		...(manifest.guards ?? []),
+		...(manifest.structuredRules ?? []),
+		...(manifest.workspaces ?? []).flatMap((workspace) => [
+			...(workspace.guards ?? []),
+			...(workspace.structuredRules ?? []),
+		]),
+	];
+	const needsComponents = structuredEntries.some(
+		(rule) => rule.componentsAny !== undefined || rule.componentsAll !== undefined || rule.compound !== undefined
+	);
+	const needsPaths = structuredEntries.some((rule) => rule.paths !== undefined || rule.pathsAll !== undefined);
+	const needsOperations = structuredEntries.some((rule) => rule.operations !== undefined);
 	const selectMatch = (matches: CompiledPolicyMatch[]): CompiledPolicyMatch | undefined => {
 		for (const match of matches) {
 			if (match.mode === 'observe') continue;
@@ -174,12 +212,29 @@ export function compilePolicy(manifest: Manifest): CompiledPolicy {
 		}
 		return undefined;
 	};
-	const inputsFor = (call: ToolCall, classification: CallClassification): EvaluationInputs => ({
-		call,
-		classification,
-		commands: call.command.trim() ? [call.command.trim()] : [],
-		paths: rulePathCandidates(call),
-	});
+	// fallow-ignore-next-line complexity -- lazily derives only selector facts used by this compiled manifest.
+	const inputsFor = (call: ToolCall, classification: CallClassification): EvaluationInputs => {
+		const cached = inputCache.get(call)?.get(classification);
+		if (cached) return cached;
+		const effectiveCall =
+			needsOperations && call.operation === undefined
+				? { ...call, operation: inferredOperation(call.tool, call.command) }
+				: call;
+		const shell =
+			needsComponents && effectiveCall.tool === 'bash' ? analyzeShellCommand(effectiveCall.command) : undefined;
+		const inputs = {
+			call: effectiveCall,
+			classification,
+			commands: effectiveCall.command.trim() ? [effectiveCall.command.trim()] : [],
+			paths: needsPaths ? rulePathCandidates(effectiveCall) : [],
+			components: shell?.components.map((component) => component.command) ?? [],
+			compound: shell?.compound ?? false,
+		};
+		const byClassification = inputCache.get(call) ?? new Map<CallClassification, EvaluationInputs>();
+		byClassification.set(classification, inputs);
+		inputCache.set(call, byClassification);
+		return inputs;
+	};
 
 	return {
 		traceMatches(workspace, call, classification) {

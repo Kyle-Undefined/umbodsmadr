@@ -21,6 +21,62 @@ test('legacy programmatic manifests without workspaces retain global policy beha
 });
 
 describe('engine > structured policy', () => {
+	test('matches parsed components without allowing a whole-command prefix glob to hide a mutation', () => {
+		const engine = new PolicyEngine(
+			makeManifest({
+				policy: { default_unknown: 'approve', approval_method: 'web' },
+				structuredRules: [{ id: 'single-diff', decision: 'allow', componentsAll: ['git diff *'], compound: false }],
+				guards: [{ id: 'commits-need-review', decision: 'block', componentsAny: ['git commit *'] }],
+			})
+		);
+		expect(engine.evaluate(makeCall({ command: 'git diff --check' }))).toMatchObject({
+			decision: 'allow',
+			matchedRule: 'single-diff',
+		});
+		expect(engine.evaluate(makeCall({ command: 'git diff --check && git commit -m test' }))).toMatchObject({
+			decision: 'block',
+			matchedRule: 'commits-need-review',
+			matchedSelectors: ['components_any'],
+		});
+	});
+
+	test('components_all requires every component to match one of the configured patterns', () => {
+		const engine = new PolicyEngine(
+			makeManifest({
+				structuredRules: [{ id: 'read-chain', decision: 'allow', componentsAll: ['git diff *', 'git status'] }],
+			})
+		);
+		expect(engine.evaluate(makeCall({ command: 'git diff --check && git status' })).decision).toBe('allow');
+		expect(
+			engine.evaluate(makeCall({ command: 'git diff --check && git commit -m test' })).matchedRule
+		).toBeUndefined();
+	});
+
+	test('paths_all requires every affected file to remain inside the allowed boundary', () => {
+		const engine = new PolicyEngine(
+			makeManifest({
+				structuredRules: [{ id: 'repo-edits', decision: 'allow', tools: ['edit'], pathsAll: ['/work/repo/**'] }],
+			})
+		);
+		expect(
+			engine.evaluate(
+				makeCall({
+					tool: 'edit',
+					command: 'edit',
+					inputs: { tool_input: { paths: ['/work/repo/a.ts', '/work/repo/b.ts'] } },
+				})
+			).decision
+		).toBe('allow');
+		expect(
+			engine.evaluate(
+				makeCall({
+					tool: 'edit',
+					command: 'edit',
+					inputs: { tool_input: { paths: ['/work/repo/a.ts', '/tmp/b.ts'] } },
+				})
+			).matchedRule
+		).toBeUndefined();
+	});
 	test('supports observe, warn, expiry, and per-generation usage limits', () => {
 		const engine = new PolicyEngine(
 			makeManifest({
@@ -159,6 +215,24 @@ describe('engine > structured policy', () => {
 		const result = engine.evaluate(makeCall({ tool: 'grep', command: '/work/repo' }));
 		expect(result.decision).toBe('approve');
 		expect(result.reason).toContain('hidden files');
+	});
+
+	test('structured path guards preserve regex escapes while matching normalized paths', () => {
+		const result = new PolicyEngine(
+			makeManifest({
+				guards: [
+					{
+						id: 'sensitive-path',
+						decision: 'block',
+						paths: ['/((^|[.\\/\\\\])\\.env($|[.\\/\\\\]))/i'],
+					},
+				],
+				structuredRules: [{ id: 'edits', decision: 'allow', tools: ['edit'] }],
+			})
+		).evaluate(makeCall({ tool: 'edit', command: '/repo/.env' }));
+
+		expect(result.decision).toBe('block');
+		expect(result.matchedRule).toBe('sensitive-path');
 	});
 
 	test('workspace guards run before workspace and global rules', () => {

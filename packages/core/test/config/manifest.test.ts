@@ -410,6 +410,47 @@ priority = 20
 			priority: 20,
 		});
 	});
+
+	test('supports component and all-target path selectors', async () => {
+		const path = writeToml(`
+[env]
+name = "test"
+version = "1.0.0"
+timeout = 5
+[policy]
+default_unknown = "approve"
+approval_method = "web"
+[[rule]]
+id = "bounded"
+decision = "allow"
+components_any = ["git status"]
+components_all = ["git status", "git diff *"]
+compound = true
+paths_all = ["/work/**", 'C:\\work\\**']
+`);
+		expect((await loadManifest(path)).structuredRules?.[0]).toMatchObject({
+			componentsAny: ['git status'],
+			componentsAll: ['git status', 'git diff *'],
+			compound: true,
+			pathsAll: ['/work/**', 'C:\\work\\**'],
+		});
+	});
+
+	test('supports explicit maintenance defaults without enabling background cleanup', async () => {
+		const path = writeToml(`
+[env]
+name = "test"
+version = "1.0.0"
+timeout = 5
+[policy]
+default_unknown = "approve"
+approval_method = "web"
+[audit]
+retention_days = 90
+compact_after_cleanup = true
+`);
+		expect((await loadManifest(path)).audit).toEqual({ retentionDays: 90, compactAfterCleanup: true });
+	});
 });
 
 describe('loadManifest > structured policy validation', () => {
@@ -519,6 +560,20 @@ paths = ["**/.env"]
 // ── Invalid manifests ────────────────────────────────────────
 
 describe('loadManifest > invalid', () => {
+	test('rejects unsafe or malformed audit retention defaults', async () => {
+		const path = writeToml(`
+[env]
+name = "test"
+version = "1.0.0"
+timeout = 5
+[policy]
+default_unknown = "approve"
+approval_method = "web"
+[audit]
+retention_days = 0
+`);
+		await expect(loadManifest(path)).rejects.toThrow('between 7 and 36500');
+	});
 	test('missing env.name', async () => {
 		const path = writeToml(`
 [env]

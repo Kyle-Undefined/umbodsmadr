@@ -3,6 +3,10 @@ import { createHash } from 'node:crypto';
 import type { ApprovalDecision, CallClassification, Manifest, StoredAuditEntry } from '../core/types.ts';
 import type { AuditLogReader } from '../db/audit-log.ts';
 import { PolicyEngine, type PolicyEvaluationTrace } from '../policy/engine.ts';
+import { lintPolicy, type PolicyLintFinding } from '../policy/policy-lint.ts';
+import { affectedPaths } from '../policy/rule-candidates.ts';
+import { analyzeShellCommand } from '../policy/shell-analyzer.ts';
+import { inferredOperation } from '../policy/operations.ts';
 import type { AuditFilter, DecisionCounts } from './types.ts';
 
 export type DecisionTransition = `${ApprovalDecision}->${ApprovalDecision}`;
@@ -26,6 +30,11 @@ export interface PolicySimulationExample {
 	candidateDecision: ApprovalDecision;
 	baselineMatchedRule?: string;
 	candidateMatchedRule?: string;
+	candidateReason: string;
+	candidateMatchedSelectors?: string[];
+	operation?: string;
+	shellComponents: string[];
+	affectedPaths: ReturnType<typeof affectedPaths>;
 }
 
 export interface SimulatedRuleFinding {
@@ -82,6 +91,7 @@ export interface PolicySimulation {
 	};
 	candidateRules: SimulatedRuleFinding[];
 	historicalDecisions: DecisionCounts;
+	lint: PolicyLintFinding[];
 }
 
 function manifestHash(manifest: Manifest): string {
@@ -169,6 +179,7 @@ function exampleFor(
 	baseline: PolicyEvaluationTrace,
 	candidate: PolicyEvaluationTrace
 ): PolicySimulationExample {
+	const shell = entry.tool === 'bash' ? analyzeShellCommand(entry.command) : undefined;
 	return {
 		id: entry.id,
 		agent: entry.agent,
@@ -182,6 +193,11 @@ function exampleFor(
 		candidateDecision: candidate.result.decision,
 		baselineMatchedRule: baseline.result.matchedRule,
 		candidateMatchedRule: candidate.result.matchedRule,
+		candidateReason: candidate.result.reason,
+		candidateMatchedSelectors: candidate.result.matchedSelectors,
+		operation: entry.operation ?? inferredOperation(entry.tool, entry.command),
+		shellComponents: shell?.components.map((component) => component.command) ?? [],
+		affectedPaths: affectedPaths(entry),
 	};
 }
 
@@ -247,6 +263,7 @@ export function simulatePolicy(
 	let eligible = 0;
 	let evaluated = 0;
 
+	// fallow-ignore-next-line complexity -- one bounded snapshot pass keeps every counter and evidence sample consistent.
 	auditLog.withSnapshot(() => {
 		eligible = auditLog.countFiltered(filter);
 		const evaluationLimit = requestedLimit ?? eligible;
@@ -347,5 +364,6 @@ export function simulatePolicy(
 		breakdown,
 		candidateRules: finalizeFindings(candidateRules),
 		historicalDecisions,
+		lint: lintPolicy(candidateManifest),
 	};
 }

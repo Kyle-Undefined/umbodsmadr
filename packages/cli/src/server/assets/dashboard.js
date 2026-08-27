@@ -388,6 +388,13 @@
 				};
 			},
 
+			formatSimulationTotal: function (decision) {
+				if (!this.simulation || !this.simulation.decisionTotals) return decision + ': 0';
+				var count = this.simulation.decisionTotals.candidate[decision] || 0;
+				var total = this.simulation.dataset.evaluated || 1;
+				return decision + ': ' + count + ' (' + ((count / total) * 100).toFixed(1) + '%)';
+			},
+
 			showTransitionExamples: function (transition, count) {
 				this.showSimulationExamples(
 					transition.replace('->', ' → '),

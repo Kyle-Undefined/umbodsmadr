@@ -36,6 +36,9 @@ export { classifyToolCall } from './policy/classifier.ts';
 export { analyzeShellCommand } from './policy/shell-analyzer.ts';
 export type { ShellOperationAnalysis } from './policy/shell-analyzer.ts';
 export { runManifestTests } from './policy/manifest-tests.ts';
+export { lintPolicy, type PolicyLintFinding, type PolicyLintSeverity } from './policy/policy-lint.ts';
+export { affectedPaths } from './policy/rule-candidates.ts';
+export { inferredOperation, inferredToolOperation, isCanonicalOperation } from './policy/operations.ts';
 export type { ManifestTestReport, ManifestTestResult } from './policy/manifest-tests.ts';
 export { createDefaultManifestSource, loadManifest, parseManifestSource } from './config/manifest.ts';
 export type { DefaultManifestOptions } from './config/manifest.ts';
@@ -62,6 +65,8 @@ export type {
 	SimulatedRuleFinding,
 } from './analytics/policy-simulation.ts';
 export { suggestRules } from './analytics/suggestions.ts';
+export { generateStarterPolicyDraft } from './analytics/starter-policy.ts';
+export type { StarterPolicyDraft, StarterPolicyOptions } from './analytics/starter-policy.ts';
 export { computeAnalyticsSnapshot } from './analytics/snapshot.ts';
 export { createAnalyticsReader } from './analytics/reader.ts';
 export type { AnalyticsReader, AnalyticsReaderOptions } from './analytics/reader.ts';

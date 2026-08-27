@@ -95,6 +95,22 @@ describe('normalizePayload', () => {
 		expect(call.operation).toBe('filesystem.read');
 	});
 
+	test('derives provider-neutral git, package, and redirection operations', () => {
+		expect(normalizePayload('test', { tool_name: 'bash', command: 'git commit -m test' }, baseOptions).operation).toBe(
+			'git.commit'
+		);
+		expect(normalizePayload('test', { tool_name: 'bash', command: 'npm publish' }, baseOptions).operation).toBe(
+			'package.publish'
+		);
+		expect(normalizePayload('test', { tool_name: 'bash', command: 'printf ok > ./out' }, baseOptions).operation).toBe(
+			'filesystem.write'
+		);
+		expect(
+			normalizePayload('test', { tool_name: 'bash', command: 'git diff --check && git commit -m test' }, baseOptions)
+				.operation
+		).toBe('git.commit');
+	});
+
 	test('timestamp is auto-generated', () => {
 		const call = normalizePayload('test', { tool_name: 'bash' }, baseOptions);
 		expect(call.timestamp).toBeDefined();

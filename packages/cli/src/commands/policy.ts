@@ -1,6 +1,8 @@
 import {
 	defaultDatabasePath,
+	generateStarterPolicyDraft,
 	loadManifest,
+	lintPolicy,
 	openAuditLogReader,
 	resolveEnvPath,
 	resolveTimeParam,
@@ -31,18 +33,61 @@ export interface PolicySimulateOptions {
 	failOn?: SimulationFailure[];
 }
 
+export async function runPolicyLintCommand(manifestPath: string, json = false) {
+	const findings = lintPolicy(await loadManifest(resolve(manifestPath)));
+	if (json) console.log(JSON.stringify({ findings }, null, 2));
+	else {
+		for (const finding of findings) console.log(`${finding.severity} ${finding.code}: ${finding.message}`);
+		console.log(`Policy lint: ${findings.length} warning${findings.length === 1 ? '' : 's'}`);
+	}
+	return findings;
+}
+
+export async function runPolicyDraftCommand(options: {
+	baselinePath?: string;
+	databasePath?: string;
+	limit?: number;
+	maxRules?: number;
+	json?: boolean;
+}) {
+	const baselinePath = resolveEnvPath(options.baselinePath);
+	const manifest = await loadManifest(baselinePath);
+	const databasePath = options.databasePath
+		? resolve(options.databasePath)
+		: defaultDatabasePath(baselinePath, manifest.env.name);
+	const auditLog = openAuditLogReader(databasePath);
+	try {
+		const draft = generateStarterPolicyDraft(auditLog, {
+			limit: options.limit,
+			maxRules: options.maxRules,
+			name: `${manifest.env.name}-draft`,
+		});
+		console.log(options.json ? JSON.stringify(draft, null, 2) : draft.source);
+		return draft;
+	} finally {
+		auditLog.close();
+	}
+}
+
 export async function runPolicyTestCommand(manifestPath: string): Promise<ReturnType<typeof runManifestTests>> {
 	const report = runManifestTests(await loadManifest(resolve(manifestPath)));
 	for (const result of report.results) {
 		console.log(`${result.passed ? 'pass' : 'FAIL'} ${result.id}: expected ${result.expected}, got ${result.actual}`);
 	}
+	for (const finding of report.lint) console.warn(`warn ${finding.code}: ${finding.message}`);
 	console.log(`Policy tests: ${report.passed} passed, ${report.failed} failed`);
+	console.log(`Policy lint: ${report.lint.length} warning${report.lint.length === 1 ? '' : 's'}`);
 	return report;
 }
 
 function printSimulation(result: PolicySimulation): void {
 	console.log(
 		`Policy simulation: ${result.dataset.evaluated}/${result.dataset.eligible} calls${result.dataset.truncated ? ' (truncated)' : ''}`
+	);
+	const candidate = result.decisionTotals.candidate;
+	const total = result.dataset.evaluated || 1;
+	console.log(
+		`Candidate: ${candidate.allow} allow (${((candidate.allow / total) * 100).toFixed(1)}%), ${candidate.approve} approve (${((candidate.approve / total) * 100).toFixed(1)}%), ${candidate.block} block (${((candidate.block / total) * 100).toFixed(1)}%)`
 	);
 	for (const [transition, count] of Object.entries(result.transitions)) {
 		console.log(`${transition.padEnd(18)} ${String(count).padStart(6)}`);
@@ -53,6 +98,7 @@ function printSimulation(result: PolicySimulation): void {
 	console.log(
 		`Coverage: ${result.newlyCovered} newly covered, ${result.stillUnmatched} still unmatched; ${result.policyChanges} policy-result changes; candidate rules: ${result.candidateRules.filter((rule) => rule.status === 'never_observed').length} never observed`
 	);
+	console.log(`Lint: ${result.lint.length} warning${result.lint.length === 1 ? '' : 's'}`);
 }
 
 function failedChecks(result: PolicySimulation, checks: SimulationFailure[]): SimulationFailure[] {

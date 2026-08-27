@@ -1,5 +1,6 @@
 import type { ApprovalDecision, Manifest } from '../core/types.ts';
 import { PolicyEngine } from './engine.ts';
+import { lintPolicy, type PolicyLintFinding } from './policy-lint.ts';
 
 export interface ManifestTestResult {
 	id: string;
@@ -13,6 +14,7 @@ export interface ManifestTestReport {
 	passed: number;
 	failed: number;
 	results: ManifestTestResult[];
+	lint: PolicyLintFinding[];
 }
 
 export function runManifestTests(manifest: Manifest): ManifestTestReport {
@@ -31,5 +33,6 @@ export function runManifestTests(manifest: Manifest): ManifestTestReport {
 		passed: results.filter((result) => result.passed).length,
 		failed: results.filter((result) => !result.passed).length,
 		results,
+		lint: lintPolicy(manifest),
 	};
 }

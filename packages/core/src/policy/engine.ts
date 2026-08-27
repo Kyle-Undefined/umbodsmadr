@@ -16,6 +16,7 @@ export interface PolicyEvaluationTrace {
 
 interface PolicyContext {
 	resolution: WorkspaceResolution;
+	policyCall: ToolCall;
 	match?: CompiledPolicyMatch;
 	policyScope: 'global' | 'workspace';
 	effectiveDefault: ApprovalDecision;
@@ -33,13 +34,16 @@ function resolvePolicyContext(
 	const resolution = resolveWorkspace(manifest, call);
 	const policyCall = resolution.workspace ? { ...call, workspaceId: resolution.workspace.id } : call;
 	const globalGuard = compiled.matchGlobalGuard(policyCall, classification);
-	if (globalGuard) return policyContext(resolution, globalGuard, 'global', manifest, classification);
+	if (globalGuard) return policyContext(resolution, policyCall, globalGuard, 'global', manifest, classification);
 	const workspaceGuard = compiled.matchWorkspaceGuard(resolution.workspace, policyCall, classification);
-	if (workspaceGuard) return policyContext(resolution, workspaceGuard, 'workspace', manifest, classification);
+	if (workspaceGuard)
+		return policyContext(resolution, policyCall, workspaceGuard, 'workspace', manifest, classification);
 	const workspaceMatch = compiled.matchWorkspaceRule(resolution.workspace, policyCall, classification);
-	if (workspaceMatch) return policyContext(resolution, workspaceMatch, 'workspace', manifest, classification);
+	if (workspaceMatch)
+		return policyContext(resolution, policyCall, workspaceMatch, 'workspace', manifest, classification);
 	return policyContext(
 		resolution,
+		policyCall,
 		compiled.matchGlobalRule(policyCall, classification),
 		'global',
 		manifest,
@@ -49,6 +53,7 @@ function resolvePolicyContext(
 
 function policyContext(
 	resolution: WorkspaceResolution,
+	policyCall: ToolCall,
 	match: CompiledPolicyMatch | undefined,
 	policyScope: 'global' | 'workspace',
 	manifest: Manifest,
@@ -57,6 +62,7 @@ function policyContext(
 	const defaultResolution = resolveClassificationDefault(manifest, resolution, classification);
 	return {
 		resolution,
+		policyCall,
 		match,
 		policyScope,
 		effectiveDefault: defaultResolution.decision,
@@ -230,11 +236,10 @@ export class PolicyEngine {
 	evaluateWithTrace(call: ToolCall): PolicyEvaluationTrace {
 		const classification = classifyToolCall(call);
 		const context = resolvePolicyContext(this.manifest, this.compiled, call, classification);
-		const tracedCall = context.resolution.workspace ? { ...call, workspaceId: context.resolution.workspace.id } : call;
 		const tracedMatches =
 			context.resolution.source === 'unresolved'
 				? []
-				: this.compiled.traceMatches(context.resolution.workspace, tracedCall, classification);
+				: this.compiled.traceMatches(context.resolution.workspace, context.policyCall, classification);
 		let result: EvaluationResult;
 		if (context.resolution.source === 'unresolved') {
 			result = unresolvedWorkspaceResult(context, classification);

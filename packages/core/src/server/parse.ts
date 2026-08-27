@@ -1,5 +1,6 @@
 import type { ToolCall } from '../core/types.ts';
 import { isRecord } from '../utils/guards.ts';
+import { inferredOperation } from '../policy/operations.ts';
 
 function requiredString(payload: Record<string, unknown>, field: string): string {
 	const value = payload[field];
@@ -34,10 +35,13 @@ export function parseEvaluatePayload(payload: unknown): ToolCall {
 		throw new Error('invalid tool call: inputs must be an object');
 	}
 
+	const tool = requiredString(payload, 'tool');
+	const command = requiredString(payload, 'command');
 	return {
 		agent: requiredString(payload, 'agent'),
-		tool: requiredString(payload, 'tool'),
-		command: requiredString(payload, 'command'),
+		tool,
+		operation: inferredOperation(tool, command),
+		command,
 		args: optionalStringArray(payload, 'args'),
 		workingDirectory: optionalString(payload, 'workingDirectory'),
 		workspaceId: optionalString(payload, 'workspaceId'),

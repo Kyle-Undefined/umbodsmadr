@@ -58,6 +58,26 @@ test('database CLI validates conflicting modes and compaction execution', async 
 	expect(compacted).toHaveProperty('filesBefore');
 });
 
+test('cleanup can explicitly sequence separately reported compaction', async () => {
+	const preview = (await runDatabaseCommand('cleanup', {
+		databasePath,
+		olderThanDays: 90,
+		dryRun: true,
+		json: true,
+	})) as AuditCleanupPreview;
+	const maintained = await runDatabaseCommand('cleanup', {
+		databasePath,
+		previewReceipt: preview.previewReceipt,
+		execute: true,
+		compactAfterCleanup: true,
+		json: true,
+	});
+	expect(maintained).toMatchObject({
+		cleanup: { deletedAuditRows: 1 },
+		compaction: { filesBefore: expect.any(Object), filesAfter: expect.any(Object) },
+	});
+});
+
 test('read-only CLI operations refuse rather than migrate an older schema', async () => {
 	const native = new Database(databasePath, { readwrite: true });
 	native.exec('PRAGMA user_version = 7');

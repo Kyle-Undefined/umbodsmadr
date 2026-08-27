@@ -53,6 +53,7 @@ id = "repository-reads"
 decision = "allow"
 tools = ["read", "grep", "glob"]
 paths = ["/work/client-app/**"]
+paths_all = ["/work/client-app/**"] # require every affected path to stay inside
 classifications = ["readonly"]
 operations = ["filesystem.read"]
 workspaces = ["client-production"]
@@ -87,7 +88,9 @@ tools = ["edit", "write", "apply_patch"]
 paths = ["/work/client-app/**"]
 ```
 
-Legacy `[rules]` entries remain supported as wildcard patterns (`rm *`, `* --force`) or regex (`/^pattern$/flags`). Structured `[[rule]]` entries have stable IDs and may select `tools`, `commands`, `paths`, `classifications`, `agents`, trusted canonical `operations`, and effective `workspaces`. Selector kinds are ANDed by default; set `requires_any = true` to OR them. Values within one selector are always ORed. Higher `priority` runs first, with manifest order breaking ties. Structured rules run before the legacy table in the same scope. Adapter-derived operations include `filesystem.read`, `filesystem.search`, `filesystem.edit`, `filesystem.write`, `network.fetch`, and `network.search`; embedded hosts may supply their own canonical dotted operation IDs. Public `/api/evaluate` callers cannot self-assert trusted operation metadata. Audit entries record both the stable rule ID and the selector kinds that matched.
+Legacy `[rules]` entries remain supported as wildcard patterns (`rm *`, `* --force`) or regex (`/^pattern$/flags`). Structured `[[rule]]` entries have stable IDs and may select `tools`, whole-invocation `commands`, parsed `components_any` / `components_all`, `compound`, `paths`, all-target `paths_all`, `classifications`, `agents`, trusted canonical `operations`, and effective `workspaces`. `components_any` requires one parsed shell component to match; `components_all` requires every component to match one of its patterns. `paths_all` requires every extracted target to stay inside the declared boundary and is the safer choice for multi-file edit allowances. Existing `commands` and `paths` retain their compatibility behavior. Selector kinds are ANDed by default; set `requires_any = true` to OR them. Values within one selector are always ORed. Higher `priority` runs first, with manifest order breaking ties. Structured rules run before the legacy table in the same scope.
+
+Affected paths are derived from provider-native path fields and arrays, `apply_patch` headers, relative and absolute Windows/POSIX paths, and reliably parsed shell redirections. Each path retains access and extraction provenance for simulation diagnostics. Canonical operations cover filesystem and network tools plus common Git, package, publication, and vault actions. Embedded hosts may supply their own trusted canonical dotted operation IDs. Public `/api/evaluate` callers cannot self-assert trusted operation metadata. Audit entries record both the stable rule ID and selector kinds that matched.
 
 `[[guard]]` and `[[workspaces.guard]]` entries are block-only invariants. Global guards run first and cannot be relaxed by workspace policy; workspace guards run next, followed by workspace rules, global rules, and classification defaults. Guards may omit `decision`; when present it must be `"block"`. A directory-wide `grep` or `glob` uses `default_unknown` instead of a permissive readonly default whenever a blocking hidden-path rule may apply, because the search may expose a protected target.
 
@@ -100,6 +103,8 @@ The audit database lives next to the manifest as `umbod.envName.db`.
 While `umbod start` is running, saved manifest changes are reloaded automatically. Umbod reads, parses, validates, and compiles the complete candidate before atomically activating it. A failed reload retains the previous policy. `/health` and `/api/manifest` expose `sourceHash`, `activeHash`, `loadedAt`, `generation`, and reload status, and each new audit row records the active policy hash and generation that produced its decision.
 
 Common shell pipelines and `&&`/`;` chains are tokenized without splitting quoted separators. Every component is classified and the strictest classification wins (`destructive`, then `external`, `stateful`, and `readonly`). Unsupported or ambiguous syntax such as command substitution, shell flow control, interpreter execution, or malformed quoting is classified as `unknown` and follows the configured unknown default.
+
+Whole-command legacy globs remain compatible and can consume compound suffixes. `umbod policy lint` warns about these patterns; migrate narrow shell allowances to component selectors or add `compound = false`.
 
 ### policy simulation
 
@@ -137,6 +142,25 @@ expect = "allow"
 ```
 
 Run them with `umbod policy test ./umbod.toml`; any mismatch exits with status 2.
+
+`policy test` also prints deterministic lint warnings. Lint can run independently in automation:
+
+```bash
+umbod policy lint ./umbod.toml --json
+umbod policy lint ./umbod.toml --fail-on-warnings
+```
+
+Lint detects compound-consuming allow globs, duplicate structured selectors, workspace decisions that preempt stricter ordinary global rules, and permissive mutation defaults. Global guards remain distinct because workspace policy cannot relax them.
+
+Embedded consumers can call `policyLint()`, and the read-only HTTP equivalent is `GET /api/policy/lint`.
+
+Generate a conservative complete starter manifest from observed operations:
+
+```bash
+umbod policy draft --env ./umbod.toml --limit 2000 --max-rules 25 > candidate.toml
+```
+
+Generated output is marked as a draft, includes common credential guards and executable regression fixtures, and does not treat historical approval as intent: only readonly observations become allows, while mutations remain approval-gated. The equivalent read-only API is `GET /api/policy/draft?limit=2000&maxRules=25`.
 
 Rule analytics label rules with no historical match as `never_observed` rather than “dead.” Suggestions calculate approval purity and minimum evidence from resolved approvals only, report pending and stale-pending requests separately, and require double the configured evidence, zero denials, and zero pending requests before proposing a permanent allow for destructive calls.
 
@@ -197,7 +221,7 @@ umbod start --env ~/policies/work.toml
 
 Pending approvals, full audit log, structured and legacy rules, active policy generation/reload health, rule analytics, and per-call policy provenance. Outcomes are labeled in theme: _Sanctioned_, _Outlawed_, _Vouched_, _Forbidden_, _In Moot_. Real-time updates use WebSocket with a reconnect refresh of policy status.
 
-The visible Policy Studio loads the active TOML source and supports an edit → validate/test → simulate → save-and-activate workflow. The default replay evaluates the latest 2,000 eligible audit calls; **All records (slow)** performs a full keyset-batched replay for release gating. Both modes are read-only and retain bounded representative examples for transition, safety, coverage, and per-rule drill-downs. Truncated samples are labeled explicitly, while a full replay reports the complete eligible-call count. Activation remains disabled until that exact editor content and selected replay mode pass parsing, compilation, embedded tests, and simulation. Saving uses a source hash to reject stale editors, a same-directory atomic file replacement, rollback on activation failure, and the normal atomic policy reload. Bootstrap fields that require a process restart cannot be changed in Studio.
+The visible Policy Studio loads the active TOML source and supports an edit → validate/test → simulate → save-and-activate workflow. The default replay evaluates the latest 2,000 eligible audit calls; **All records (slow)** performs a full keyset-batched replay for release gating. Both modes are read-only and show candidate decision totals plus bounded representative examples for transitions, safety, coverage, and individual rules. Drill-down includes raw commands, evaluation reasons, matched selectors, parsed shell components, affected paths, and canonical operations. Truncated samples are labeled explicitly, while a full replay reports the complete eligible-call count. Activation remains disabled until that exact editor content and selected replay mode pass parsing, compilation, embedded tests, and simulation. Saving uses a source hash to reject stale editors, a same-directory atomic file replacement, rollback on activation failure, and the normal atomic policy reload. Bootstrap fields that require a process restart cannot be changed in Studio.
 
 Use the CLI simulator for custom filters, unbounded replay, JSON output, and CI-style failure checks.
 
@@ -212,6 +236,16 @@ umbod database status --older-than-days 90 --json
 umbod database cleanup --older-than-days 90 --dry-run --json
 ```
 
+An optional manifest default removes the need to repeat the retention period:
+
+```toml
+[audit]
+retention_days = 90
+compact_after_cleanup = false
+```
+
+These fields never start a timer or delete data. A Hlið Routine, cron job, or another authorized scheduler may invoke the same status → preview → receipt-bound execution flow. Umbod continues to own validation, locking, cleanup, checkpointing, and compaction.
+
 Preview resolves an exact UTC cutoff, preserves every pending approval, returns exact eligible/retained row counts, bounded representative samples, current main/WAL/SHM sizes, and an opaque receipt. File sizes are exact filesystem observations. `estimatedReusableBytes` is only SQLite's page-size × freelist-count estimate; it is not a promise of bytes that compaction will reclaim.
 
 Cleanup is destructive and requires the exact receipt. JSON/automation mode also requires the explicit execution flag:
@@ -223,6 +257,8 @@ umbod database cleanup \
   --json
 ```
 
+Add `--compact-after-cleanup` to an explicit cleanup execution to sequence the separate compaction operation and receive both cleanup and compaction reports. The manifest default may request the same sequencing, but it is consulted only during an explicitly executed cleanup command.
+
 Receipts bind the cutoff, eligible-row fingerprint, and durable maintenance revision. Any intervening audit insertion, approval resolution, or maintenance mutation makes the receipt stale. Cleanup takes an immediate SQLite transaction, rechecks the receipt under the write lock, deletes only rows without pending approvals, verifies foreign keys and FTS integrity, and records provenance in `audit_maintenance_history` without creating an audit call. Resolved approval rows cascade through the declared foreign key. A failure rolls the transaction back.
 
 Logical cleanup does not claim to shrink the database file. Physical compaction is separate and explicit:
@@ -231,7 +267,7 @@ Logical cleanup does not claim to shrink the database file. Physical compaction 
 umbod database compact --execute --json
 ```
 
-Compaction runs an owning-connection WAL truncate checkpoint, refuses active readers/writers, checks for conservative temporary free space, and then runs SQLite `VACUUM`. It reports exact before/after main and WAL sizes. Umbod does not change `auto_vacuum` on existing databases and does not run cleanup or compaction at startup or in the background. A manifest retention default is intentionally omitted for now: without a separately authorized schedule it would add configuration without changing the explicit preview/execute safety flow.
+Compaction runs an owning-connection WAL truncate checkpoint, refuses active readers/writers, checks for conservative temporary free space, and then runs SQLite `VACUUM`. It reports exact before/after main and WAL sizes. Umbod does not change `auto_vacuum` on existing databases and does not run cleanup or compaction at startup or in the background.
 
 The HTTP equivalents are:
 

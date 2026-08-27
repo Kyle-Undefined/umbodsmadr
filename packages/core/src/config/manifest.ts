@@ -1,6 +1,7 @@
 import { DEFAULT_HOST, DEFAULT_PORT } from '../core/types.ts';
 import type {
 	ApprovalDecision,
+	AuditConfig,
 	CallClassification,
 	Manifest,
 	ManifestPolicyTest,
@@ -114,6 +115,22 @@ function normalizeServer(raw: Record<string, unknown> | undefined): ServerConfig
 	};
 }
 
+function normalizeAudit(raw: Record<string, unknown> | undefined): AuditConfig | undefined {
+	if (raw === undefined) return undefined;
+	const retentionDays = raw.retention_days;
+	if (
+		retentionDays !== undefined &&
+		(!Number.isSafeInteger(retentionDays) || (retentionDays as number) < 7 || (retentionDays as number) > 36_500)
+	) {
+		throw new Error('manifest audit.retention_days must be an integer between 7 and 36500');
+	}
+	const compactAfterCleanup = optionalBoolean(raw.compact_after_cleanup, 'audit.compact_after_cleanup');
+	return {
+		...(retentionDays === undefined ? {} : { retentionDays: retentionDays as number }),
+		...(compactAfterCleanup === undefined ? {} : { compactAfterCleanup }),
+	};
+}
+
 function normalizeRules(raw: Record<string, unknown> | undefined): Manifest['rules'] {
 	const normalized: Manifest['rules'] = {};
 
@@ -189,19 +206,29 @@ function normalizeStructuredEntries(raw: unknown, scope: string, guard: boolean)
 			throw new Error(`manifest ${scope} "${id}".classifications contains an unknown classification`);
 		}
 		const commands = normalizeStringList(value.commands, `${scope} "${id}".commands`);
+		const componentsAny = normalizeStringList(value.components_any, `${scope} "${id}".components_any`);
+		const componentsAll = normalizeStringList(value.components_all, `${scope} "${id}".components_all`);
 		const paths = normalizeStringList(value.paths, `${scope} "${id}".paths`);
+		const pathsAll = normalizeStringList(value.paths_all, `${scope} "${id}".paths_all`);
 		const operations = normalizeStringList(value.operations, `${scope} "${id}".operations`);
 		if (operations?.some((operation) => !isCanonicalOperation(operation))) {
 			throw new Error(`manifest ${scope} "${id}".operations contains an invalid canonical operation`);
 		}
 		validateMatcherPatterns(commands, `${scope} "${id}".commands`);
+		validateMatcherPatterns(componentsAny, `${scope} "${id}".components_any`);
+		validateMatcherPatterns(componentsAll, `${scope} "${id}".components_all`);
 		validateMatcherPatterns(paths, `${scope} "${id}".paths`);
+		validateMatcherPatterns(pathsAll, `${scope} "${id}".paths_all`);
 		const entry = {
 			id,
 			decision: guard ? ('block' as const) : (decision as ApprovalDecision),
 			tools: normalizeStringList(value.tools, `${scope} "${id}".tools`),
 			commands,
+			componentsAny,
+			componentsAll,
+			compound: optionalBoolean(value.compound, `${scope} "${id}".compound`),
 			paths,
+			pathsAll,
 			classifications: classifications as CallClassification[] | undefined,
 			agents: normalizeStringList(value.agents, `${scope} "${id}".agents`),
 			operations,
@@ -216,7 +243,11 @@ function normalizeStructuredEntries(raw: unknown, scope: string, guard: boolean)
 		if (
 			!entry.tools &&
 			!entry.commands &&
+			!entry.componentsAny &&
+			!entry.componentsAll &&
+			entry.compound === undefined &&
 			!entry.paths &&
+			!entry.pathsAll &&
 			!entry.classifications &&
 			!entry.agents &&
 			!entry.operations &&
@@ -375,6 +406,7 @@ export async function loadManifest(manifestPath: string): Promise<Manifest> {
 	return parseManifestSource(source, manifestPath);
 }
 
+// fallow-ignore-next-line complexity -- the manifest parser is the single validation boundary for all optional sections.
 export function parseManifestSource(source: string, sourceLabel = 'manifest'): Manifest {
 	let parsed: Record<string, unknown>;
 	try {
@@ -390,6 +422,8 @@ export function parseManifestSource(source: string, sourceLabel = 'manifest'): M
 	const structuredRules = parsed.rule;
 	const guards = parsed.guard;
 	const server = isRecord(parsed.server) ? parsed.server : undefined;
+	if (parsed.audit !== undefined && !isRecord(parsed.audit)) throw new Error('manifest audit must be a table');
+	const audit = isRecord(parsed.audit) ? parsed.audit : undefined;
 	const tests = parsed.test;
 
 	if (!env?.name || !env?.version) {
@@ -425,5 +459,6 @@ export function parseManifestSource(source: string, sourceLabel = 'manifest'): M
 		workspaces: normalizeWorkspaces(workspaces),
 		...(tests === undefined ? {} : { tests: normalizeManifestTests(tests) }),
 		server: normalizeServer(server),
+		...(audit === undefined ? {} : { audit: normalizeAudit(audit) }),
 	};
 }

@@ -24,13 +24,28 @@ export interface ServerConfig {
 	port: number;
 }
 
+export interface AuditConfig {
+	/** Default used by explicit maintenance preview commands; never schedules deletion by itself. */
+	retentionDays?: number;
+	/** Default for an explicitly requested post-cleanup compaction step. */
+	compactAfterCleanup?: boolean;
+}
+
 export interface StructuredRuleSelectors {
 	/** Match any listed tool name. */
 	tools?: string[];
 	/** Match any listed command pattern using Umbod's existing glob/regex syntax. */
 	commands?: string[];
+	/** Match when at least one parsed shell component matches a listed pattern. */
+	componentsAny?: string[];
+	/** Match when every parsed shell component matches at least one listed pattern. */
+	componentsAll?: string[];
+	/** Restrict a shell rule to compound or single-component invocations. */
+	compound?: boolean;
 	/** Match any listed operation target path using Umbod's existing glob/regex syntax. */
 	paths?: string[];
+	/** Match only when every extracted affected path matches a listed pattern. */
+	pathsAll?: string[];
 	/** Match any listed classifier result. */
 	classifications?: CallClassification[];
 	/** Match any listed agent name. */
@@ -39,6 +54,12 @@ export interface StructuredRuleSelectors {
 	operations?: string[];
 	/** Match the effective resolved workspace ID. */
 	workspaces?: string[];
+}
+
+export interface AffectedPath {
+	path: string;
+	access: 'read' | 'write' | 'delete' | 'unknown';
+	source: 'provider-input' | 'apply-patch' | 'shell-redirection' | 'command';
 }
 
 export interface StructuredRule extends StructuredRuleSelectors {
@@ -98,6 +119,7 @@ export interface Manifest {
 	workspaces?: WorkspaceConfig[];
 	tests?: ManifestPolicyTest[];
 	server: ServerConfig;
+	audit?: AuditConfig;
 }
 
 export interface ToolCall {

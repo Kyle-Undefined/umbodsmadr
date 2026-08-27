@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { ruleMatchCandidates, looksLikeFilePath } from '../../src/policy/rule-candidates.ts';
+import { affectedPaths, ruleMatchCandidates, looksLikeFilePath } from '../../src/policy/rule-candidates.ts';
 import { makeCall } from '../helpers.ts';
 
 // ── looksLikeFilePath ───────────────────────────────────────
@@ -13,6 +13,7 @@ describe('looksLikeFilePath', () => {
 	test('relative paths', () => {
 		expect(looksLikeFilePath('./src/index.ts')).toBe(true);
 		expect(looksLikeFilePath('../parent/file.txt')).toBe(true);
+		expect(looksLikeFilePath('src/index.ts')).toBe(true);
 	});
 
 	test('paths containing /.', () => {
@@ -40,6 +41,58 @@ describe('looksLikeFilePath', () => {
 		expect(looksLikeFilePath('')).toBe(false);
 		expect(looksLikeFilePath('  ')).toBe(false);
 		expect(looksLikeFilePath('x'.repeat(9000))).toBe(false);
+	});
+
+	test('does not treat multiline document or patch content as one affected path', () => {
+		expect(looksLikeFilePath('policy documentation\nmentions /repo/.env without accessing it')).toBe(false);
+		expect(
+			affectedPaths({
+				agent: 'codex',
+				tool: 'edit',
+				command: '*** Begin Patch\n*** Update File: /repo/policy.ts\n+const example = "/repo/.env";\n*** End Patch',
+				inputs: {},
+				timestamp: '2026-08-27T00:00:00.000Z',
+			})
+		).toEqual([{ path: '/repo/policy.ts', access: 'write', source: 'apply-patch' }]);
+	});
+
+	test('does not treat an entire shell command containing a dot-path as an affected path', () => {
+		expect(
+			affectedPaths({
+				agent: 'codex',
+				tool: 'bash',
+				command: 'bun -e \'console.log("/repo/.env")\'',
+				inputs: { command: 'bun -e \'console.log("/repo/.env")\'' },
+				timestamp: '2026-08-27T00:00:00.000Z',
+			})
+		).toEqual([]);
+	});
+});
+
+describe('affectedPaths', () => {
+	test('extracts every apply_patch target with access provenance', () => {
+		const paths = affectedPaths(
+			makeCall({
+				tool: 'edit',
+				command:
+					'*** Begin Patch\n*** Update File: src/a.ts\n*** Add File: C:\\work\\b.ts\n*** Delete File: old/c.ts\n*** End Patch',
+			})
+		);
+		expect(paths).toContainEqual({ path: 'src/a.ts', access: 'write', source: 'apply-patch' });
+		expect(paths).toContainEqual({ path: 'C:/work/b.ts', access: 'write', source: 'apply-patch' });
+		expect(paths).toContainEqual({ path: 'old/c.ts', access: 'delete', source: 'apply-patch' });
+	});
+
+	test('extracts provider multi-file inputs and reliable shell redirections', () => {
+		const provider = affectedPaths(
+			makeCall({ tool: 'edit', command: 'edit', inputs: { tool_input: { paths: ['src/a.ts', 'src/b.ts'] } } })
+		);
+		expect(provider.map((entry) => entry.path)).toEqual(['src/a.ts', 'src/b.ts']);
+		expect(affectedPaths(makeCall({ tool: 'bash', command: 'printf ok > ./out.txt' }))).toContainEqual({
+			path: './out.txt',
+			access: 'write',
+			source: 'shell-redirection',
+		});
 	});
 });
 
