@@ -89,6 +89,19 @@
 		return generation === store[generationKey] && workspace === store.insightWorkspace;
 	}
 
+	async function jsonResponse(response, label) {
+		try {
+			return await response.json();
+		} catch {
+			throw new Error(
+				label +
+					' returned a non-JSON response (HTTP ' +
+					response.status +
+					'). The Project Preview relay may be unavailable; reload the Preview and retry.'
+			);
+		}
+	}
+
 	async function fetchCoverageReport(workspace) {
 		var response = await fetch('/api/analytics/coverage' + workspaceQuery(workspace));
 		var result = await response.json();
@@ -333,7 +346,7 @@
 				try {
 					var response = await fetch('/api/manifest');
 					if (!response.ok) throw new Error('policy status fetch failed: ' + response.status);
-					var result = await response.json();
+					var result = await jsonResponse(response, 'Policy status');
 					this.manifest = result;
 					this.policyStatus = result.policyStatus || this.policyStatus;
 				} catch (e) {
@@ -346,7 +359,7 @@
 				this.policySourceError = '';
 				try {
 					var response = await fetch('/api/policy/source');
-					var result = await response.json();
+					var result = await jsonResponse(response, 'Policy source');
 					if (!response.ok) throw new Error(result && result.error ? result.error : 'source fetch failed');
 					this.simulationSource = result.source;
 					this.policyLoadedSource = result.source;
@@ -403,7 +416,7 @@
 								: { candidate: this.simulationSource, limit: 2000 }
 						),
 					});
-					var result = await response.json();
+					var result = await jsonResponse(response, 'Policy simulation');
 					if (generation !== this.simulationRequestGeneration) return;
 					if (!response.ok)
 						throw new Error(result && result.error ? result.error : 'simulation failed: ' + response.status);

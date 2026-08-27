@@ -452,6 +452,24 @@ describe('dashboard activity updates', () => {
 		});
 	});
 
+	test('explains non-JSON Project Preview simulation failures', async () => {
+		const harness = dashboardHarness({
+			fetch: async () => ({
+				ok: false,
+				status: 500,
+				json: async () => {
+					throw new SyntaxError("Unexpected token 'P'");
+				},
+			}),
+		});
+		harness.store.simulationSource = '[env]';
+
+		await harness.store.runSimulation();
+
+		expect(harness.store.policySourceError).toContain('Project Preview relay may be unavailable');
+		expect(harness.store.policySourceError).toContain('HTTP 500');
+	});
+
 	test('requests an explicit all-record replay and retains drill-down examples', async () => {
 		const example = { id: 7, command: 'git status', baselineDecision: 'block', candidateDecision: 'allow' };
 		const harness = dashboardHarness({
