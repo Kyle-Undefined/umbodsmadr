@@ -84,6 +84,10 @@ Commands:
 `);
 }
 
+function requestsHelp(command: string | undefined, args: string[]): boolean {
+	return command === undefined || [command, ...args].some((argument) => argument === '--help' || argument === '-h');
+}
+
 function analyzeTarget(value: string | undefined): AnalyzeTarget {
 	if (value === 'tools' || value === 'rules' || value === 'coverage') return value;
 	throw new Error('analyze requires one of: tools, rules, coverage');
@@ -275,11 +279,11 @@ async function runCommand(command: string, args: string[]): Promise<void> {
 
 async function main(): Promise<void> {
 	const [command, ...args] = Bun.argv.slice(2);
-	if (!command || command === '--help' || command === '-h') {
+	if (requestsHelp(command, args)) {
 		showHelp();
 		return;
 	}
-	await runCommand(command, args);
+	await runCommand(command as string, args);
 }
 
 main().catch((error: unknown) => {
