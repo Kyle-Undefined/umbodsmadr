@@ -369,4 +369,34 @@ describe('adapter install', () => {
 			expect(result.config.settingsPath).not.toContain('\\');
 		});
 	}
+
+	for (const adapter of [claudeAdapter, cursorAdapter, codexAdapter, geminiAdapter, otherAdapter]) {
+		test(`${adapter.id} keeps generated wrapper transport timeouts coherent`, () => {
+			const posix = adapter.install({
+				url: 'http://127.0.0.1:9090',
+				outputDir: '/tmp/umbod',
+				timeoutSeconds: 45,
+				platform: 'posix',
+			});
+			const windows = adapter.install({
+				url: 'http://127.0.0.1:9090',
+				outputDir: 'C:\\umbod',
+				timeoutSeconds: 45,
+				platform: 'windows',
+			});
+
+			expect(posix.assets[0]?.contents).toContain('--connect-timeout 5 --max-time 45');
+			expect(windows.assets.at(-1)?.contents).toContain('--connect-timeout 5 --max-time 45');
+		});
+
+		test(`${adapter.id} maps disabled timeout to the finite wrapper fallback`, () => {
+			const result = adapter.install({
+				url: 'http://127.0.0.1:9090',
+				outputDir: '/tmp/umbod',
+				timeoutSeconds: 0,
+				platform: 'posix',
+			});
+			expect(result.assets[0]?.contents).toContain('--connect-timeout 5 --max-time 86400');
+		});
+	}
 });

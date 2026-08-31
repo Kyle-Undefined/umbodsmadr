@@ -2,7 +2,7 @@ import { homedir } from 'node:os';
 import path from 'node:path';
 
 import { buildCurlWrapperScript, buildPowerShellWrapperScript } from '../hooks/adapter-utils.ts';
-import type { GeneratedHookAsset, HookInstallOptions } from './base.ts';
+import { normalizeHookTimeoutSeconds, type GeneratedHookAsset, type HookInstallOptions } from './base.ts';
 
 type HookTarget = 'generic' | 'cursor' | 'gemini' | 'codex';
 
@@ -21,6 +21,7 @@ export function hookInstallScaffold(
 	const targetHome = options.homeDir ?? homedir();
 	const scriptFile = isWindows ? `hook-${agent}.ps1` : `hook-${agent}.sh`;
 	const scriptPath = targetPath.join(options.outputDir, scriptFile);
+	const timeoutSeconds = normalizeHookTimeoutSeconds(options.timeoutSeconds);
 	return {
 		targetPath,
 		targetHome,
@@ -28,8 +29,8 @@ export function hookInstallScaffold(
 		asset: {
 			relativePath: scriptFile,
 			contents: isWindows
-				? buildPowerShellWrapperScript(options.url, agent, hookTarget)
-				: buildCurlWrapperScript(options.url, agent, hookTarget),
+				? buildPowerShellWrapperScript(options.url, agent, timeoutSeconds, hookTarget)
+				: buildCurlWrapperScript(options.url, agent, timeoutSeconds, hookTarget),
 			executable: !isWindows,
 		},
 	};

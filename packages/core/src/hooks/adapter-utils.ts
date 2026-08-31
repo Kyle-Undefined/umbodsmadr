@@ -112,7 +112,7 @@ export function normalizePayload(agent: string, payload: unknown, options: Norma
 
 export type CurlWrapperHookTarget = 'codex' | 'cursor' | 'gemini' | 'generic';
 
-function buildCurlPreamble(url: string, agent: string): string {
+function buildCurlPreamble(url: string, agent: string, timeoutSeconds: number): string {
 	return `#!/usr/bin/env sh
 set -eu
 R=$(mktemp) && trap 'rm -f "$R"' EXIT
@@ -120,7 +120,7 @@ CURL=curl
 if [ -x /mnt/c/Windows/System32/curl.exe ] && grep -qi microsoft /proc/sys/kernel/osrelease 2>/dev/null; then
   CURL=/mnt/c/Windows/System32/curl.exe
 fi
-C=$("$CURL" -sS -o "$R" -w '%{http_code}' --connect-timeout 5 \\
+C=$("$CURL" -sS -o "$R" -w '%{http_code}' --connect-timeout 5 --max-time ${timeoutSeconds} \\
   -X POST ${shellQuote(url)} \\
   -H 'content-type: application/json' \\
   -H ${shellQuote('x-umbod-agent: ' + agent)} \\
@@ -131,10 +131,11 @@ C=$("$CURL" -sS -o "$R" -w '%{http_code}' --connect-timeout 5 \\
 export function buildCurlWrapperScript(
 	serverUrl: string,
 	agent: string,
+	timeoutSeconds: number,
 	hookTarget: CurlWrapperHookTarget = 'generic'
 ): string {
 	const url = normalizeServerUrl(serverUrl) + '/api/hooks';
-	const preamble = buildCurlPreamble(url, agent);
+	const preamble = buildCurlPreamble(url, agent, timeoutSeconds);
 
 	if (hookTarget === 'cursor') {
 		return (
@@ -212,24 +213,42 @@ function psQuote(value: string): string {
 	return `'${value.replaceAll("'", "''")}'`;
 }
 
-function buildPsPreamble(url: string, agent: string): string {
+function buildPsPreamble(url: string, agent: string, timeoutSeconds: number): string {
 	return `$body = [Console]::In.ReadToEnd()
+$responsePath = [System.IO.Path]::GetTempFileName()
 try {
-    $r = Invoke-WebRequest -Method POST -Uri ${psQuote(url)} \`
-        -Headers @{ 'content-type' = 'application/json'; 'x-umbod-agent' = ${psQuote(agent)} } \`
-        -Body $body -UseBasicParsing -TimeoutSec 5
-    if ($r.StatusCode -ge 200 -and $r.StatusCode -lt 300) {
-        $json = $r.Content | ConvertFrom-Json
+    $curlPath = (Get-Command curl.exe -ErrorAction Stop).Source
+    $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+    $startInfo.FileName = $curlPath
+    $startInfo.Arguments = ${psQuote('-sS -o "')} + $responsePath + ${psQuote(`" -w "%{http_code}" --connect-timeout 5 --max-time ${timeoutSeconds} -X POST "${url}" -H "content-type: application/json" -H "x-umbod-agent: ${agent}" --data-binary "@-"`)}
+    $startInfo.UseShellExecute = $false
+    $startInfo.RedirectStandardInput = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    $process = New-Object System.Diagnostics.Process
+    $process.StartInfo = $startInfo
+    if (-not $process.Start()) { throw 'curl.exe failed to start' }
+    $statusTask = $process.StandardOutput.ReadToEndAsync()
+    $errorTask = $process.StandardError.ReadToEndAsync()
+    $process.StandardInput.Write($body)
+    $process.StandardInput.Close()
+    $process.WaitForExit()
+    $status = $statusTask.Result
+    $curlError = $errorTask.Result
+    if ($process.ExitCode -ne 0) { throw "curl.exe failed: $curlError" }
+    if ($status -match '^2[0-9][0-9]$') {
+        $json = Get-Content -Raw -LiteralPath $responsePath | ConvertFrom-Json
 `;
 }
 
 export function buildPowerShellWrapperScript(
 	serverUrl: string,
 	agent: string,
+	timeoutSeconds: number,
 	hookTarget: CurlWrapperHookTarget = 'generic'
 ): string {
 	const url = normalizeServerUrl(serverUrl) + '/api/hooks';
-	const preamble = buildPsPreamble(url, agent);
+	const preamble = buildPsPreamble(url, agent, timeoutSeconds);
 
 	if (hookTarget === 'cursor') {
 		return (
@@ -239,7 +258,7 @@ export function buildPowerShellWrapperScript(
             exit 0
         }
     }
-} catch {}
+} catch {} finally { Remove-Item -LiteralPath $responsePath -Force -ErrorAction SilentlyContinue }
 Write-Output '{"permission":"deny","user_message":"Blocked by umbod policy.","agent_message":"This tool call was denied by the umbod policy engine. See the umbod dashboard for the matched rule and reason."}'
 exit 2
 `
@@ -256,7 +275,7 @@ exit 2
         Write-Output '{"decision":"deny","reason":"Blocked by umbod policy. See the umbod dashboard for the matched rule and reason.","suppressOutput":true}'
         exit 0
     }
-} catch {}
+} catch {} finally { Remove-Item -LiteralPath $responsePath -Force -ErrorAction SilentlyContinue }
 [Console]::Error.WriteLine('umbod hook request failed.')
 exit 2
 `
@@ -274,7 +293,7 @@ exit 2
             exit 0
         }
     }
-} catch {}
+} catch {} finally { Remove-Item -LiteralPath $responsePath -Force -ErrorAction SilentlyContinue }
 [Console]::Error.WriteLine('umbod hook request failed.')
 exit 2
 `
@@ -285,7 +304,7 @@ exit 2
 		preamble +
 		`        if ($json.permissionDecision -eq 'allow') { exit 0 }
     }
-} catch {}
+} catch {} finally { Remove-Item -LiteralPath $responsePath -Force -ErrorAction SilentlyContinue }
 exit 2
 `
 	);

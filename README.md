@@ -207,7 +207,7 @@ OpenCode and Pi use their native extension APIs because ACP itself does not defi
 
 For Codex, append the generated `.umbod/codex.toml` snippet to `~/.codex/config.toml`. Keep the generated `.umbod/hook-codex.sh` in place; the TOML snippet points Codex at that script. On first launch after adding the hook, Codex will ask you to trust it before it runs.
 
-Codex has its own hook timeout and does not currently expose a true "disabled" value. If `env.timeout = 0`, umbod keeps approval requests open indefinitely, but the generated Codex hook uses `timeout = 86400` as a practical outer limit. Do not change that to `timeout = 0`; Codex treats zero as an immediate timeout.
+Generated command wrappers allow five seconds to establish the Umbod connection, then allow the request to remain pending for the configured `env.timeout`. Claude and Codex receive the same normalized outer hook timeout. If `env.timeout = 0`, Umbod keeps approval requests open indefinitely while wrappers and provider configuration use `86400` seconds as a practical finite limit. Do not change a generated Codex timeout to `0`; Codex treats zero as an immediate timeout.
 
 ## environments
 

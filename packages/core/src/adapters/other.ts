@@ -1,4 +1,4 @@
-import type { HookAdapter } from './base.ts';
+import { normalizeHookTimeoutSeconds, type HookAdapter } from './base.ts';
 import { buildCurlWrapperScript, buildPowerShellWrapperScript, normalizePayload } from '../hooks/adapter-utils.ts';
 
 function integrationGuide(url: string): string {
@@ -87,16 +87,17 @@ export const otherAdapter: HookAdapter = {
 		});
 	},
 	install(options) {
+		const timeoutSeconds = normalizeHookTimeoutSeconds(options.timeoutSeconds);
 		return {
 			assets: [
 				{
 					relativePath: 'hook-other.sh',
-					contents: buildCurlWrapperScript(options.url, 'other', 'generic'),
+					contents: buildCurlWrapperScript(options.url, 'other', timeoutSeconds, 'generic'),
 					executable: true,
 				},
 				{
 					relativePath: 'hook-other.ps1',
-					contents: buildPowerShellWrapperScript(options.url, 'other', 'generic'),
+					contents: buildPowerShellWrapperScript(options.url, 'other', timeoutSeconds, 'generic'),
 				},
 			],
 			config: {
