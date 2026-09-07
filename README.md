@@ -192,6 +192,8 @@ Roots are optional. A host can use a purely conceptual workspace by sending its 
 
 Supported agents: Claude Code, Cursor, Codex, Gemini CLI, OpenCode, and Pi. Use `other` to generate a portable integration kit for another agent with an enforceable native pre-tool callback.
 
+POSIX/WSL command wrappers use curl and standard POSIX utilities; Windows wrappers use curl.exe and PowerShell. No jq or additional language runtime is required. See [approval feedback](docs/approval-feedback.md) for the host callback contract, provider delivery boundaries, and regeneration requirements when upgrading existing hooks.
+
 ```bash
 umbod configure --agent claude
 umbod configure --agent cursor --output ~/hooks

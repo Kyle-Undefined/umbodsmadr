@@ -16,6 +16,8 @@ Configure the agent to send its pre-tool JSON payload to one of these commands o
 
 Exit code 0 means allow. Any other exit code means deny. The wrappers fail closed if Umbod cannot be reached or returns anything except an explicit allow.
 
+POSIX/WSL wrappers use curl and standard POSIX utilities, with no jq or additional language runtime. Windows wrappers use curl.exe and PowerShell. On a valid denial, POSIX writes a JSON string containing the denial text to stderr; decode that string in the custom host. Windows writes plain denial text. The custom host must explicitly forward the text to the requesting agent; exit status alone cannot deliver feedback. Transport/protocol failures emit diagnostics instead of feedback. Returning an error is not proof of model consumption.
+
 The payload should provide as many of these fields as the agent exposes:
 
 \`\`\`json
@@ -54,7 +56,7 @@ const response = await fetch(${JSON.stringify(endpoint)}, {
 if (!response.ok) throw new Error(\`Umbod returned HTTP \${response.status}\`);
 const decision = await response.json();
 if (decision.permissionDecision !== "allow") {
-  throw new Error(decision.reason ?? "Blocked by Umbod policy");
+  throw new Error(decision.permissionDecisionReason ?? "Blocked by Umbod policy");
 }
 \`\`\`
 

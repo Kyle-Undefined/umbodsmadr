@@ -39,7 +39,25 @@ export interface ActivityEntry extends AuditEntry {
 	approvalRequestId?: number;
 }
 
-export type ApprovalPrompt = (call: ToolCall, reason: string) => Promise<ApprovalDecision>;
+export interface ApprovalResponse {
+	decision: ApprovalDecision;
+	/** User-authored guidance, not permission or a policy reason. */
+	userFeedback?: string;
+}
+
+export type ApprovalPrompt = (call: ToolCall, reason: string) => Promise<ApprovalDecision | ApprovalResponse>;
+
+function normalizeApprovalResponse(
+	value: ApprovalDecision | ApprovalResponse
+): ApprovalResponse & { decision: Exclude<ApprovalDecision, 'approve'> } {
+	const decision = typeof value === 'string' ? value : value?.decision;
+	return {
+		decision: decision === 'allow' ? 'allow' : 'block',
+		...(typeof value === 'object' && value !== null && typeof value.userFeedback === 'string'
+			? { userFeedback: value.userFeedback }
+			: {}),
+	};
+}
 
 export interface AuthorizeOptions {
 	/** Per-call host approval UI. Overrides the prompt supplied to createUmbod. */
@@ -49,6 +67,8 @@ export interface AuthorizeOptions {
 }
 
 export interface AuthorizationResult {
+	/** Request-scoped user guidance. Returning this does not prove provider/model consumption. */
+	userFeedback?: string;
 	entry: ActivityEntry;
 	/** The policy engine's original decision. */
 	policyDecision: ApprovalDecision;
@@ -261,19 +281,25 @@ export function createUmbod(options: UmbodOptions): Umbod {
 		reason: string,
 		approvalMethod: Manifest['policy']['approval_method'],
 		approvalTimeoutMs: number
-	): Promise<ApprovalDecision> {
+	): Promise<ApprovalResponse> {
 		if (approvalPrompt && approvalMethod === 'cli') {
 			// Prompt only: resolve the DB record directly from the prompt's answer
-			const decision = await approvalPrompt(call, reason);
-			auditLog.resolveApprovalRequest(approvalRequestId, decisionToApprovalStatus(decision));
-			return decision;
+			const response = normalizeApprovalResponse(await approvalPrompt(call, reason));
+			auditLog.resolveApprovalRequest(approvalRequestId, decisionToApprovalStatus(response.decision));
+			return response;
 		}
 
 		if (approvalPrompt && approvalMethod === 'both') {
+			let winningResponse: ApprovalResponse | undefined;
+			let finished = false;
 			// Both: prompt runs in background and resolves the DB; polling is the gate
 			void approvalPrompt(call, reason)
-				.then((decision) => {
-					auditLog.resolveApprovalRequest(approvalRequestId, decisionToApprovalStatus(decision));
+				.then((value) => {
+					if (finished) return;
+					const response = normalizeApprovalResponse(value);
+					if (auditLog.resolveApprovalRequest(approvalRequestId, decisionToApprovalStatus(response.decision))) {
+						winningResponse = response;
+					}
 				})
 				.catch((error: unknown) => {
 					logger.warn('failed to resolve prompted approval request', {
@@ -281,11 +307,16 @@ export function createUmbod(options: UmbodOptions): Umbod {
 						error: errorMessage(error),
 					});
 				});
-			return waitForApprovalResolution(approvalRequestId, approvalTimeoutMs);
+			try {
+				const decision = await waitForApprovalResolution(approvalRequestId, approvalTimeoutMs);
+				return winningResponse ?? { decision };
+			} finally {
+				finished = true;
+			}
 		}
 
 		// "web" (or no prompt wired up): wait for the DB record to be resolved externally
-		return waitForApprovalResolution(approvalRequestId, approvalTimeoutMs);
+		return { decision: await waitForApprovalResolution(approvalRequestId, approvalTimeoutMs) };
 	}
 
 	async function authorize(call: ToolCall, callOptions: AuthorizeOptions = {}): Promise<AuthorizationResult> {
@@ -293,31 +324,33 @@ export function createUmbod(options: UmbodOptions): Umbod {
 		const evaluation = policyManager.evaluate(normalizedCall);
 		const result = evaluation.result;
 		const entry = publishEntry(normalizedCall, result, evaluation.status);
-		let decision: Exclude<ApprovalDecision, 'approve'>;
+		let response: ApprovalResponse;
 
 		if (result.decision !== 'approve') {
-			decision = result.decision;
+			response = { decision: result.decision };
 		} else if (!entry.approvalRequestId) {
-			decision = 'block';
+			response = { decision: 'block' };
 		} else if (callOptions.bypassApproval) {
 			auditLog.resolveApprovalRequest(entry.approvalRequestId, 'approved');
-			decision = 'allow';
+			response = { decision: 'allow' };
 		} else if (callOptions.approvalPrompt) {
-			const prompted = await callOptions.approvalPrompt(normalizedCall, result.reason);
-			auditLog.resolveApprovalRequest(entry.approvalRequestId, decisionToApprovalStatus(prompted));
-			decision = prompted === 'allow' ? 'allow' : 'block';
+			response = normalizeApprovalResponse(await callOptions.approvalPrompt(normalizedCall, result.reason));
+			auditLog.resolveApprovalRequest(entry.approvalRequestId, decisionToApprovalStatus(response.decision));
 		} else {
-			const resolved = await resolveApprovalDecision(
+			response = await resolveApprovalDecision(
 				entry.approvalRequestId,
 				normalizedCall,
 				result.reason,
 				evaluation.manifest.policy.approval_method,
 				configuredApprovalTimeoutMs ?? evaluation.manifest.env.timeout * 1000
 			);
-			decision = resolved === 'allow' ? 'allow' : 'block';
 		}
 
-		return { entry, policyDecision: result.decision, decision };
+		return {
+			entry,
+			policyDecision: result.decision,
+			...normalizeApprovalResponse(response),
+		};
 	}
 
 	// ── Route handlers ──────────────────────────────────────────────
@@ -425,30 +458,31 @@ export function createUmbod(options: UmbodOptions): Umbod {
 		try {
 			const payload = await req.json();
 			const call = adapter.normalizePayload(payload);
-			const evaluation = policyManager.evaluate(call);
-			const result = evaluation.result;
-			const entry = publishEntry(call, result, evaluation.status);
-			let finalDecision = result.decision;
-
-			if (result.decision === 'approve' && entry.approvalRequestId) {
-				finalDecision = await resolveApprovalDecision(
-					entry.approvalRequestId,
-					call,
-					result.reason,
-					evaluation.manifest.policy.approval_method,
-					configuredApprovalTimeoutMs ?? evaluation.manifest.env.timeout * 1000
-				);
-			}
+			const result = await authorize(call);
 
 			const body = {
-				permissionDecision: toPermissionDecision(finalDecision),
-				permissionDecisionReason: result.reason,
+				permissionDecision: toPermissionDecision(result.decision),
+				policyDecision: result.policyDecision,
+				policyReason: result.entry.reason,
+				...(result.userFeedback !== undefined ? { userFeedback: result.userFeedback } : {}),
+				permissionDecisionReason:
+					result.decision === 'block' && result.userFeedback !== undefined
+						? `${result.entry.reason}\n\nUser feedback:\n${result.userFeedback}`
+						: result.entry.reason,
 				hookSpecificOutput: {
 					hookEventName: adapter.hookEvent,
 				},
 			};
 
-			// Hooks always respond 200; consumers read permissionDecision from the body.
+			// Successful hooks respond 200; the selected wire format carries the decision.
+			if (url.searchParams.get('format') === 'command-v1') {
+				return new Response(
+					body.permissionDecision === 'allow'
+						? 'umbod-hook-v1 allow'
+						: `umbod-hook-v1 deny ${JSON.stringify(body.permissionDecisionReason).replaceAll('\u007f', '\\u007f')}`,
+					{ headers: { 'content-type': 'text/plain; charset=utf-8' } }
+				);
+			}
 			return Response.json(body, { status: 200 });
 		} catch (error: unknown) {
 			logger.warn('failed to process hook payload', {

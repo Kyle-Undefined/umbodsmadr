@@ -4,6 +4,7 @@ export { createUmbod } from './server/api.ts';
 export type {
 	ActivityEntry,
 	ApprovalPrompt,
+	ApprovalResponse,
 	AuthorizationResult,
 	AuthorizeOptions,
 	Umbod,

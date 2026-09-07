@@ -134,76 +134,45 @@ export function buildCurlWrapperScript(
 	timeoutSeconds: number,
 	hookTarget: CurlWrapperHookTarget = 'generic'
 ): string {
-	const url = normalizeServerUrl(serverUrl) + '/api/hooks';
+	const url = normalizeServerUrl(serverUrl) + '/api/hooks?format=command-v1';
 	const preamble = buildCurlPreamble(url, agent, timeoutSeconds);
 
-	if (hookTarget === 'cursor') {
-		return (
-			preamble +
-			`case "$C" in
-  2*)
-    if grep -Eq '"permissionDecision"[[:space:]]*:[[:space:]]*"allow"' "$R"; then
-      printf '%s\\n' '{"permission":"allow"}'
-      exit 0
-    fi
-    ;;
-esac
-printf '%s\\n' '{"permission":"deny","user_message":"Blocked by umbod policy.","agent_message":"This tool call was denied by the umbod policy engine. See the umbod dashboard for the matched rule and reason."}'
-cat "$R" >&2
-exit 2
-`
-		);
-	}
-
-	if (hookTarget === 'gemini') {
-		return (
-			preamble +
-			`case "$C" in
-  2*)
-    if grep -Eq '"permissionDecision"[[:space:]]*:[[:space:]]*"allow"' "$R"; then
-      printf '%s\\n' '{"decision":"allow","suppressOutput":true}'
-      exit 0
-    fi
-    printf '%s\\n' '{"decision":"deny","reason":"Blocked by umbod policy. See the umbod dashboard for the matched rule and reason.","suppressOutput":true}'
-    exit 0
-    ;;
-esac
-printf '%s\\n' 'umbod hook request failed.' >&2
-cat "$R" >&2
-exit 2
-`
-		);
-	}
-
-	if (hookTarget === 'codex') {
-		return (
-			preamble +
-			`case "$C" in
-  2*)
-    if grep -Eq '"permissionDecision"[[:space:]]*:[[:space:]]*"allow"' "$R"; then
-      exit 0
-    fi
-    if grep -Eq '"permissionDecision"[[:space:]]*:[[:space:]]*"deny"' "$R"; then
-      printf '%s\\n' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Blocked by umbod policy. See the umbod dashboard for the matched rule and reason."}}'
-      exit 0
-    fi
-    ;;
-esac
-printf '%s\\n' 'umbod hook request failed.' >&2
-cat "$R" >&2
-exit 2
-`
-		);
-	}
-
+	const allowOutput =
+		hookTarget === 'cursor'
+			? '{"permission":"allow"}'
+			: hookTarget === 'gemini'
+				? '{"decision":"allow","suppressOutput":true}'
+				: '';
+	const denyOutput =
+		hookTarget === 'codex'
+			? '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":%s}}'
+			: hookTarget === 'cursor'
+				? '{"permission":"deny","user_message":%s,"agent_message":%s}'
+				: hookTarget === 'gemini'
+					? '{"decision":"deny","reason":%s,"suppressOutput":true}'
+					: '%s';
+	// One JSON string token, never arbitrary JSON or shell code.
+	const denialPattern = String.raw`umbod-hook-v1 deny "([^"\\[:cntrl:]]|\\(["\\/bfnrt]|u[0-9a-fA-F]{4}))*"`;
 	return (
 		preamble +
-		`case "$C" in
-  2*)
-    if grep -Eq '"permissionDecision"[[:space:]]*:[[:space:]]*"allow"' "$R"; then exit 0; fi
+		`# command-v1 is exactly one line without a newline terminator.
+# The server JSON-encodes the reason; only a validated string token reaches printf.
+case "$C" in
+  2[0-9][0-9])
+    if LC_ALL=C tr -d '\\000-\\037\\177' < "$R" | cmp -s - "$R"; then
+      if LC_ALL=C grep -Eq '^umbod-hook-v1 allow$' "$R"; then
+        ${allowOutput ? `printf '%s\\n' '${allowOutput}'` : ':'}
+        exit 0
+      fi
+      if LC_ALL=C grep -Eq ${shellQuote('^' + denialPattern + '$')} "$R"; then
+        REASON=$(sed 's/^umbod-hook-v1 deny //' "$R")
+        printf '${denyOutput}\\n' "$REASON" ${hookTarget === 'cursor' ? '"$REASON"' : ''} ${hookTarget === 'generic' ? '>&2' : ''}
+        exit ${hookTarget === 'generic' ? 2 : 0}
+      fi
+    fi
     ;;
 esac
-cat "$R" >&2
+printf '%s\\n' 'umbod hook request failed (transport or invalid command-v1 response); feedback delivery unavailable.' >&2
 exit 2
 `
 	);
@@ -214,7 +183,10 @@ function psQuote(value: string): string {
 }
 
 function buildPsPreamble(url: string, agent: string, timeoutSeconds: number): string {
-	return `$body = [Console]::In.ReadToEnd()
+	return `$ErrorActionPreference = 'Stop'
+[Console]::InputEncoding = New-Object System.Text.UTF8Encoding($false)
+[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
+$body = [Console]::In.ReadToEnd()
 $responsePath = [System.IO.Path]::GetTempFileName()
 try {
     $curlPath = (Get-Command curl.exe -ErrorAction Stop).Source
@@ -230,14 +202,18 @@ try {
     if (-not $process.Start()) { throw 'curl.exe failed to start' }
     $statusTask = $process.StandardOutput.ReadToEndAsync()
     $errorTask = $process.StandardError.ReadToEndAsync()
-    $process.StandardInput.Write($body)
+    $bodyBytes = [System.Text.Encoding]::UTF8.GetBytes($body)
+    $process.StandardInput.BaseStream.Write($bodyBytes, 0, $bodyBytes.Length)
     $process.StandardInput.Close()
     $process.WaitForExit()
     $status = $statusTask.Result
     $curlError = $errorTask.Result
     if ($process.ExitCode -ne 0) { throw "curl.exe failed: $curlError" }
     if ($status -match '^2[0-9][0-9]$') {
-        $json = Get-Content -Raw -LiteralPath $responsePath | ConvertFrom-Json
+        $json = Get-Content -Raw -Encoding UTF8 -LiteralPath $responsePath | ConvertFrom-Json
+        if ($json -isnot [System.Management.Automation.PSCustomObject] -or $json.permissionDecision -isnot [string] -or $json.permissionDecision -cnotin @('allow', 'deny')) { throw 'invalid hook response' }
+        $reason = 'Blocked by Umbod policy.'
+        if ($json.permissionDecisionReason -is [string]) { $reason = $json.permissionDecisionReason }
 `;
 }
 
@@ -250,61 +226,31 @@ export function buildPowerShellWrapperScript(
 	const url = normalizeServerUrl(serverUrl) + '/api/hooks';
 	const preamble = buildPsPreamble(url, agent, timeoutSeconds);
 
-	if (hookTarget === 'cursor') {
-		return (
-			preamble +
-			`        if ($json.permissionDecision -eq 'allow') {
-            Write-Output '{"permission":"allow"}'
-            exit 0
-        }
-    }
-} catch {} finally { Remove-Item -LiteralPath $responsePath -Force -ErrorAction SilentlyContinue }
-Write-Output '{"permission":"deny","user_message":"Blocked by umbod policy.","agent_message":"This tool call was denied by the umbod policy engine. See the umbod dashboard for the matched rule and reason."}'
-exit 2
-`
-		);
-	}
-
-	if (hookTarget === 'gemini') {
-		return (
-			preamble +
-			`        if ($json.permissionDecision -eq 'allow') {
-            Write-Output '{"decision":"allow","suppressOutput":true}'
-            exit 0
-        }
-        Write-Output '{"decision":"deny","reason":"Blocked by umbod policy. See the umbod dashboard for the matched rule and reason.","suppressOutput":true}'
-        exit 0
-    }
-} catch {} finally { Remove-Item -LiteralPath $responsePath -Force -ErrorAction SilentlyContinue }
-[Console]::Error.WriteLine('umbod hook request failed.')
-exit 2
-`
-		);
-	}
-
-	if (hookTarget === 'codex') {
-		return (
-			preamble +
-			`        if ($json.permissionDecision -eq 'allow') {
-            exit 0
-        }
-        if ($json.permissionDecision -eq 'deny') {
-            Write-Output '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Blocked by umbod policy. See the umbod dashboard for the matched rule and reason."}}'
-            exit 0
-        }
-    }
-} catch {} finally { Remove-Item -LiteralPath $responsePath -Force -ErrorAction SilentlyContinue }
-[Console]::Error.WriteLine('umbod hook request failed.')
-exit 2
-`
-		);
-	}
-
+	const allowOutput =
+		hookTarget === 'cursor'
+			? `Write-Output '{"permission":"allow"}'`
+			: hookTarget === 'gemini'
+				? `Write-Output '{"decision":"allow","suppressOutput":true}'`
+				: '';
+	const denyOutput =
+		hookTarget === 'codex'
+			? `@{ hookSpecificOutput = @{ hookEventName = 'PreToolUse'; permissionDecision = 'deny'; permissionDecisionReason = $reason } } | ConvertTo-Json -Depth 4 -Compress`
+			: hookTarget === 'cursor'
+				? `@{ permission = 'deny'; user_message = $reason; agent_message = $reason } | ConvertTo-Json -Compress`
+				: hookTarget === 'gemini'
+					? `@{ decision = 'deny'; reason = $reason; suppressOutput = $true } | ConvertTo-Json -Compress`
+					: `[Console]::Error.WriteLine($reason)`;
 	return (
 		preamble +
-		`        if ($json.permissionDecision -eq 'allow') { exit 0 }
+		`        if ($json.permissionDecision -ceq 'allow') {
+            ${allowOutput}
+            exit 0
+        }
+        ${denyOutput}
+        exit ${hookTarget === 'generic' ? 2 : 0}
     }
-} catch {} finally { Remove-Item -LiteralPath $responsePath -Force -ErrorAction SilentlyContinue }
+} catch { [Console]::Error.WriteLine($_.Exception.Message) } finally { Remove-Item -LiteralPath $responsePath -Force -ErrorAction SilentlyContinue }
+[Console]::Error.WriteLine('umbod hook request failed; feedback delivery unavailable.')
 exit 2
 `
 	);

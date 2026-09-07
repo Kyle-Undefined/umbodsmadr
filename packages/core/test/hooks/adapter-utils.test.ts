@@ -152,7 +152,7 @@ describe('buildCurlWrapperScript', () => {
 		expect(script).toContain('curl');
 		expect(script).toContain('http://127.0.0.1:9090/api/hooks');
 		expect(script).toContain('x-umbod-agent: test');
-		expect(script).toContain('permissionDecision');
+		expect(script).toContain('umbod-hook-v1');
 		expect(script).toContain('--connect-timeout 5 --max-time 30');
 		expect(script).toContain('exit 0');
 		expect(script).toContain('exit 2');
@@ -174,7 +174,7 @@ describe('buildCurlWrapperScript', () => {
 
 	test('codex wrapper emits PreToolUse hookSpecificOutput deny JSON', () => {
 		const script = buildCurlWrapperScript('http://127.0.0.1:9090', 'codex', 30, 'codex');
-		expect(script).toContain('"hookSpecificOutput"');
+		expect(script).toContain('"hookSpecificOutput":');
 		expect(script).toContain('"hookEventName":"PreToolUse"');
 		expect(script).toContain('"permissionDecision":"deny"');
 		expect(script).toContain('x-umbod-agent: codex');
@@ -202,7 +202,7 @@ describe('buildPowerShellWrapperScript', () => {
 		expect(script).toContain('Get-Command curl.exe -ErrorAction Stop');
 		expect(script).toContain('--connect-timeout 5 --max-time 45');
 		expect(script).not.toContain('Invoke-WebRequest');
-		expect(script).toContain('$process.StandardInput.Write($body)');
+		expect(script).toContain('$process.StandardInput.BaseStream.Write($bodyBytes, 0, $bodyBytes.Length)');
 		expect(script).toContain('x-umbod-agent: test');
 		expect(script).toContain('exit 2');
 	});
@@ -217,7 +217,7 @@ describe('generated wrapper execution', () => {
 				expect(request.headers.get('x-umbod-agent')).toBe('test');
 				expect(await request.text()).toBe('{"tool_name":"bash"}');
 				await Bun.sleep(5_100);
-				return Response.json({ permissionDecision: 'allow' });
+				return new Response('umbod-hook-v1 allow');
 			},
 		});
 		const directory = await mkdtemp(path.join(tmpdir(), 'umbod-wrapper-'));

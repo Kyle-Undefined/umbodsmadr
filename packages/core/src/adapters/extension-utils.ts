@@ -39,10 +39,10 @@ export function authorizationFunction(serverUrl: string, agent: string, timeoutS
 			${timeoutSeconds > 0 ? `signal: AbortSignal.timeout(${timeoutSeconds * 1000}),` : ''}
 		});
 		if (!response.ok) return { allowed: false, reason: \`Umbod returned HTTP \${response.status}.\` };
-		const result = await response.json() as { permissionDecision?: string; reason?: string };
+		const result = await response.json() as { permissionDecision?: string; permissionDecisionReason?: string };
 		return {
 			allowed: result.permissionDecision === "allow",
-			reason: result.reason ?? "Blocked by Umbod policy. See the Umbod dashboard for details.",
+			reason: typeof result.permissionDecisionReason === "string" ? result.permissionDecisionReason : "Blocked by Umbod policy. See the Umbod dashboard for details.",
 		};
 	} catch (error) {
 		return { allowed: false, reason: \`Umbod hook request failed: \${String(error)}\` };
