@@ -573,7 +573,13 @@ export class AuditLogReader {
 		filter: AuditFilter,
 		page: number,
 		pageSize: number
-	): { entries: StoredAuditEntry[]; page: number; pageSize: number; total: number; totalPages: number } {
+	): {
+		entries: StoredAuditEntry[];
+		page: number;
+		pageSize: number;
+		total: number;
+		totalPages: number;
+	} {
 		const { where, params } = this.buildFilter(filter);
 		const row = this.database.query(`SELECT COUNT(*) AS count FROM audit_log ${where}`).get(...params) as {
 			count: number;
@@ -1173,7 +1179,9 @@ export class AuditLogStore extends AuditLogReader {
 				: null;
 			const journal = this.database.query('PRAGMA journal_mode').get() as { journal_mode: string };
 			const pageSize = this.database.query('PRAGMA page_size').get() as { page_size: number };
-			const freeList = this.database.query('PRAGMA freelist_count').get() as { freelist_count: number };
+			const freeList = this.database.query('PRAGMA freelist_count').get() as {
+				freelist_count: number;
+			};
 			const state = this.database.query('SELECT revision FROM audit_maintenance_state WHERE id = 1').get() as {
 				revision: number;
 			};
@@ -1224,7 +1232,9 @@ export class AuditLogStore extends AuditLogReader {
              )`
 				)
 				.get(cutoff) as { eligible: number; oldest: string | null; newest: string | null };
-			const total = this.database.query('SELECT COUNT(*) AS count FROM audit_log').get() as { count: number };
+			const total = this.database.query('SELECT COUNT(*) AS count FROM audit_log').get() as {
+				count: number;
+			};
 			const approvals = approvalCounts(
 				this.database
 					.query(
@@ -1327,7 +1337,9 @@ export class AuditLogStore extends AuditLogReader {
 							.get(receipt.cutoff) as { count: number }
 					).count;
 					const auditRowsBefore = (
-						this.database.query('SELECT COUNT(*) AS count FROM audit_log').get() as { count: number }
+						this.database.query('SELECT COUNT(*) AS count FROM audit_log').get() as {
+							count: number;
+						}
 					).count;
 					const approvalRows = approvalCounts(
 						this.database
@@ -1361,7 +1373,9 @@ export class AuditLogStore extends AuditLogReader {
 					if (hasUsableTrigramIndex(this.database)) {
 						this.database.exec("INSERT INTO audit_log_command_fts(audit_log_command_fts) VALUES ('integrity-check')");
 					}
-					const retained = this.database.query('SELECT COUNT(*) AS count FROM audit_log').get() as { count: number };
+					const retained = this.database.query('SELECT COUNT(*) AS count FROM audit_log').get() as {
+						count: number;
+					};
 					const deletedAuditRows = Number(auditRowsBefore) - Number(retained.count);
 					const completedAt = new Date().toISOString();
 					const history = this.database
@@ -1500,7 +1514,9 @@ export class AuditLogStore extends AuditLogReader {
 		);
 
 		const appended = this.database.transaction(() => {
-			const row = insertEntry.get(...auditEntryValues(call, result, timestamp, provenance)) as { id: number };
+			const row = insertEntry.get(...auditEntryValues(call, result, timestamp, provenance)) as {
+				id: number;
+			};
 			let approvalRequestId: number | undefined;
 
 			if (result.decision === 'approve') {
@@ -1518,7 +1534,8 @@ export class AuditLogStore extends AuditLogReader {
 	resolveApprovalRequest(
 		id: number,
 		status: Exclude<ApprovalStatus, 'pending'>,
-		resolvedAt = new Date().toISOString()
+		resolvedAt = new Date().toISOString(),
+		grant?: { key: string; call: ToolCall }
 	): boolean {
 		const changed = this.database.transaction(() => {
 			const result = this.database
@@ -1528,7 +1545,51 @@ export class AuditLogStore extends AuditLogReader {
          WHERE id = ? AND status = 'pending'`
 				)
 				.run(status, resolvedAt, id);
-			if (result.changes > 0) this.advanceMaintenanceRevision(resolvedAt);
+			if (result.changes > 0) {
+				if (grant && status === 'approved') {
+					this.database
+						.query(
+							'INSERT OR IGNORE INTO remembered_approvals (grant_key, tool, working_directory, created_at) VALUES (?, ?, ?, ?)'
+						)
+						.run(grant.key, grant.call.tool, grant.call.workingDirectory as string, resolvedAt);
+					this.database
+						.query('INSERT OR IGNORE INTO remembered_approval_details (grant_key, command) VALUES (?, ?)')
+						.run(grant.key, grant.call.command);
+				}
+				this.advanceMaintenanceRevision(resolvedAt);
+			}
+			return result.changes > 0;
+		})();
+		if (changed) this.noteMutation();
+		return changed;
+	}
+
+	// fallow-ignore-next-line unused-class-member -- public shared-grant API used by embedding hosts.
+	hasRememberedApproval(key: string): boolean {
+		return this.database.query('SELECT 1 FROM remembered_approvals WHERE grant_key = ?').get(key) !== null;
+	}
+
+	// fallow-ignore-next-line unused-class-member -- public shared-grant API used by embedding hosts.
+	listRememberedApprovals(): {
+		grant_key: string;
+		tool: string;
+		working_directory: string;
+		created_at: string;
+		command: string | null;
+	}[] {
+		return this.database
+			.query(
+				'SELECT g.*, d.command FROM remembered_approvals g LEFT JOIN remembered_approval_details d ON d.grant_key = g.grant_key ORDER BY g.created_at, g.grant_key'
+			)
+			.all() as ReturnType<AuditLogStore['listRememberedApprovals']>;
+	}
+
+	// fallow-ignore-next-line unused-class-member -- public shared-grant API used by embedding hosts.
+	forgetApproval(key: string): boolean {
+		const changed = this.database.transaction(() => {
+			this.database.query('DELETE FROM remembered_approval_details WHERE grant_key = ?').run(key);
+			const result = this.database.query('DELETE FROM remembered_approvals WHERE grant_key = ?').run(key);
+			if (result.changes) this.advanceMaintenanceRevision(new Date().toISOString());
 			return result.changes > 0;
 		})();
 		if (changed) this.noteMutation();

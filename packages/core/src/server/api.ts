@@ -33,6 +33,7 @@ import { logger } from '../utils/logger.ts';
 import type { SessionLogSource } from '../sessions/types.ts';
 import { parseEvaluatePayload, resolveAgentId } from './parse.ts';
 import { inferredOperation } from '../policy/operations.ts';
+import { rememberedApprovalKey } from '../policy/remembered-approval.ts';
 
 export interface ActivityEntry extends AuditEntry {
 	id: number;
@@ -41,18 +42,24 @@ export interface ActivityEntry extends AuditEntry {
 
 export interface ApprovalResponse {
 	decision: ApprovalDecision;
+	/** Persist this approved request in Umbod's shared database. */
+	persist?: 'always';
 	/** User-authored guidance, not permission or a policy reason. */
 	userFeedback?: string;
 }
 
 export type ApprovalPrompt = (call: ToolCall, reason: string) => Promise<ApprovalDecision | ApprovalResponse>;
 
+// fallow-ignore-next-line complexity -- validates the backward-compatible approval envelope without treating persistence or feedback as permission.
 function normalizeApprovalResponse(
 	value: ApprovalDecision | ApprovalResponse
 ): ApprovalResponse & { decision: Exclude<ApprovalDecision, 'approve'> } {
 	const decision = typeof value === 'string' ? value : value?.decision;
 	return {
 		decision: decision === 'allow' ? 'allow' : 'block',
+		...(decision === 'allow' && typeof value === 'object' && value?.persist === 'always'
+			? { persist: 'always' as const }
+			: {}),
 		...(typeof value === 'object' && value !== null && typeof value.userFeedback === 'string'
 			? { userFeedback: value.userFeedback }
 			: {}),
@@ -230,10 +237,41 @@ export function createUmbod(options: UmbodOptions): Umbod {
 
 	const auditLog = options.auditLog ?? new AuditLogStore(options.dbPath as string, options.auditLogOptions);
 
+	function resolvePromptedApproval(
+		id: number,
+		call: ToolCall,
+		response: ApprovalResponse
+	): ApprovalResponse | undefined {
+		try {
+			const key = response.persist === 'always' ? rememberedApprovalKey(policyManager.manifest, call) : undefined;
+			if (response.persist === 'always' && !key)
+				throw new Error('Always requires an absolute working directory and a resolved workspace');
+			const changed = auditLog.resolveApprovalRequest(
+				id,
+				decisionToApprovalStatus(response.decision),
+				new Date().toISOString(),
+				key ? { key, call } : undefined
+			);
+			return changed ? response : undefined;
+		} catch (error: unknown) {
+			const failure: ApprovalResponse = {
+				decision: 'block',
+				userFeedback: `Always approval could not be saved: ${errorMessage(error)}`,
+			};
+			return auditLog.resolveApprovalRequest(id, 'denied') ? failure : undefined;
+		}
+	}
+
 	function publishEntry(call: ToolCall, result: EvaluationResult, status: PolicyStatus): ActivityEntry {
 		const provenance = { policyHash: status.activeHash, policyGeneration: status.generation };
 		const { entryId, approvalRequestId } = auditLog.append(call, result, provenance);
-		const entry: ActivityEntry = { id: entryId, ...call, ...result, ...provenance, approvalRequestId };
+		const entry: ActivityEntry = {
+			id: entryId,
+			...call,
+			...result,
+			...provenance,
+			approvalRequestId,
+		};
 
 		try {
 			onActivity?.(entry);
@@ -267,7 +305,10 @@ export function createUmbod(options: UmbodOptions): Umbod {
 			}
 
 			if (deadline !== undefined && Date.now() >= deadline) {
-				logger.warn('approval request timed out', { approvalRequestId, timeoutMs: approvalTimeoutMs });
+				logger.warn('approval request timed out', {
+					approvalRequestId,
+					timeoutMs: approvalTimeoutMs,
+				});
 				return 'block';
 			}
 
@@ -285,8 +326,11 @@ export function createUmbod(options: UmbodOptions): Umbod {
 		if (approvalPrompt && approvalMethod === 'cli') {
 			// Prompt only: resolve the DB record directly from the prompt's answer
 			const response = normalizeApprovalResponse(await approvalPrompt(call, reason));
-			auditLog.resolveApprovalRequest(approvalRequestId, decisionToApprovalStatus(response.decision));
-			return response;
+			return (
+				resolvePromptedApproval(approvalRequestId, call, response) ?? {
+					decision: await waitForApprovalResolution(approvalRequestId, approvalTimeoutMs),
+				}
+			);
 		}
 
 		if (approvalPrompt && approvalMethod === 'both') {
@@ -297,9 +341,7 @@ export function createUmbod(options: UmbodOptions): Umbod {
 				.then((value) => {
 					if (finished) return;
 					const response = normalizeApprovalResponse(value);
-					if (auditLog.resolveApprovalRequest(approvalRequestId, decisionToApprovalStatus(response.decision))) {
-						winningResponse = response;
-					}
+					winningResponse = resolvePromptedApproval(approvalRequestId, call, response);
 				})
 				.catch((error: unknown) => {
 					logger.warn('failed to resolve prompted approval request', {
@@ -319,10 +361,19 @@ export function createUmbod(options: UmbodOptions): Umbod {
 		return { decision: await waitForApprovalResolution(approvalRequestId, approvalTimeoutMs) };
 	}
 
+	// fallow-ignore-next-line complexity -- ordered policy, remembered-grant and approval resolution gates retain block precedence and atomic persistence.
 	async function authorize(call: ToolCall, callOptions: AuthorizeOptions = {}): Promise<AuthorizationResult> {
 		const normalizedCall = call.operation ? call : { ...call, operation: inferredOperation(call.tool, call.command) };
 		const evaluation = policyManager.evaluate(normalizedCall);
-		const result = evaluation.result;
+		const key = rememberedApprovalKey(evaluation.manifest, normalizedCall);
+		const result =
+			evaluation.result.decision === 'approve' && key && auditLog.hasRememberedApproval(key)
+				? {
+						...evaluation.result,
+						decision: 'allow' as const,
+						reason: 'Allowed by a remembered Umbod approval',
+					}
+				: evaluation.result;
 		const entry = publishEntry(normalizedCall, result, evaluation.status);
 		let response: ApprovalResponse;
 
@@ -335,7 +386,12 @@ export function createUmbod(options: UmbodOptions): Umbod {
 			response = { decision: 'allow' };
 		} else if (callOptions.approvalPrompt) {
 			response = normalizeApprovalResponse(await callOptions.approvalPrompt(normalizedCall, result.reason));
-			auditLog.resolveApprovalRequest(entry.approvalRequestId, decisionToApprovalStatus(response.decision));
+			response = resolvePromptedApproval(entry.approvalRequestId, normalizedCall, response) ?? {
+				decision: await waitForApprovalResolution(
+					entry.approvalRequestId,
+					configuredApprovalTimeoutMs ?? evaluation.manifest.env.timeout * 1000
+				),
+			};
 		} else {
 			response = await resolveApprovalDecision(
 				entry.approvalRequestId,
@@ -348,7 +404,7 @@ export function createUmbod(options: UmbodOptions): Umbod {
 
 		return {
 			entry,
-			policyDecision: result.decision,
+			policyDecision: evaluation.result.decision,
 			...normalizeApprovalResponse(response),
 		};
 	}
@@ -388,7 +444,12 @@ export function createUmbod(options: UmbodOptions): Umbod {
 		const resolved = auditLog.resolveApprovalRequest(approvalId, status, resolvedAt);
 
 		return Response.json(
-			{ ok: resolved, approvalRequestId: approvalId, status, resolvedAt: resolved ? resolvedAt : undefined },
+			{
+				ok: resolved,
+				approvalRequestId: approvalId,
+				status,
+				resolvedAt: resolved ? resolvedAt : undefined,
+			},
 			{ status: resolved ? 200 : 409 }
 		);
 	}
@@ -747,7 +808,10 @@ export function createUmbod(options: UmbodOptions): Umbod {
 		listPendingApprovals,
 		analyticsSnapshot: (snapshotOptions) => computeAnalyticsSnapshot(auditLog, policyManager.manifest, snapshotOptions),
 		starterPolicyDraft: (draftOptions) =>
-			generateStarterPolicyDraft(auditLog, { ...draftOptions, name: `${policyManager.manifest.env.name}-draft` }),
+			generateStarterPolicyDraft(auditLog, {
+				...draftOptions,
+				name: `${policyManager.manifest.env.name}-draft`,
+			}),
 		policyLint: () => lintPolicy(policyManager.manifest),
 		databaseStatus: (policy) => auditLog.databaseStatus(policy),
 		previewDatabaseCleanup: (policy) => auditLog.previewCleanup(policy),

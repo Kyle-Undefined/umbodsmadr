@@ -339,7 +339,7 @@ const result = await umbod.authorize({
 Bun.serve({ port: 9090, fetch: (req) => umbod.fetch(req) ?? new Response('not found', { status: 404 }) });
 ```
 
-`umbod.fetch` serves the same `/health` and `/api/*` contract as the CLI server (minus the dashboard), so generated hooks work unchanged against either. Approvals surface through `listPendingApprovals()` / `resolveApproval()`, or pass `approvalPrompt` to wire them into your own UI.
+`umbod.fetch` serves the same `/health` and `/api/*` contract as the CLI server (minus the dashboard), so generated hooks work unchanged against either. Approvals surface through `listPendingApprovals()` / `resolveApproval()`, or pass `approvalPrompt` to wire them into your own UI. Hosts can persist shared Always grants and inspect or revoke them through the audit store; see [remembered approvals](docs/remembered-approvals.md).
 
 Policy tooling is also available in process: `policyLint()` inspects the active manifest, `starterPolicyDraft()` derives a conservative candidate from history, and the exported `simulatePolicy`, `runManifestTests`, `lintPolicy`, `affectedPaths`, and `inferredOperation` helpers let a trusted host build its own review surface without duplicating matching semantics. Database consumers should use `databaseStatus()`, `previewDatabaseCleanup()`, receipt-bound `executeDatabaseCleanup()`, and `compactDatabase()`; see [the maintenance guide](docs/database-maintenance.md).
 

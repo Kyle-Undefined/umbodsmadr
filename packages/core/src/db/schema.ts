@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 8;
+export const SCHEMA_VERSION = 10;
 
 export const SCHEMA = `
 CREATE TABLE IF NOT EXISTS audit_log (
@@ -37,6 +37,27 @@ CREATE TABLE IF NOT EXISTS approval_requests (
     ON DELETE CASCADE
     ON UPDATE CASCADE
 );
+
+CREATE TABLE IF NOT EXISTS remembered_approvals (
+  grant_key TEXT PRIMARY KEY,
+  tool TEXT NOT NULL,
+  working_directory TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS remembered_approval_details (
+  grant_key TEXT PRIMARY KEY REFERENCES remembered_approvals(grant_key) ON DELETE CASCADE,
+  command TEXT NOT NULL
+);
+
+INSERT OR IGNORE INTO remembered_approval_details (grant_key, command)
+SELECT g.grant_key, a.command
+FROM remembered_approvals g
+JOIN approval_requests p ON p.resolved_at = g.created_at AND p.status = 'approved'
+JOIN audit_log a ON a.id = p.audit_log_id AND a.tool = g.tool AND a.working_directory = g.working_directory
+WHERE (SELECT COUNT(*) FROM approval_requests p2 JOIN audit_log a2 ON a2.id = p2.audit_log_id
+  WHERE p2.resolved_at = g.created_at AND p2.status = 'approved' AND a2.tool = g.tool
+    AND a2.working_directory = g.working_directory) = 1;
 
 CREATE INDEX IF NOT EXISTS approval_requests_audit_log_id_idx
   ON approval_requests(audit_log_id);
@@ -152,10 +173,25 @@ export const MIGRATIONS: Record<number, MigrationStatement[]> = {
 	3: [{ sql: 'ALTER TABLE audit_log ADD COLUMN command_search TEXT', addsColumn: 'command_search' }],
 	4: [
 		{ sql: 'ALTER TABLE audit_log ADD COLUMN policy_hash TEXT', addsColumn: 'policy_hash' },
-		{ sql: 'ALTER TABLE audit_log ADD COLUMN policy_generation INTEGER', addsColumn: 'policy_generation' },
+		{
+			sql: 'ALTER TABLE audit_log ADD COLUMN policy_generation INTEGER',
+			addsColumn: 'policy_generation',
+		},
 	],
 	5: [{ sql: 'ALTER TABLE audit_log ADD COLUMN operation TEXT', addsColumn: 'operation' }],
-	6: [{ sql: 'ALTER TABLE audit_log ADD COLUMN matched_rule_mode TEXT', addsColumn: 'matched_rule_mode' }],
-	7: [{ sql: 'ALTER TABLE audit_log ADD COLUMN matched_selectors_json TEXT', addsColumn: 'matched_selectors_json' }],
+	6: [
+		{
+			sql: 'ALTER TABLE audit_log ADD COLUMN matched_rule_mode TEXT',
+			addsColumn: 'matched_rule_mode',
+		},
+	],
+	7: [
+		{
+			sql: 'ALTER TABLE audit_log ADD COLUMN matched_selectors_json TEXT',
+			addsColumn: 'matched_selectors_json',
+		},
+	],
 	8: [],
+	9: [],
+	10: [],
 };
