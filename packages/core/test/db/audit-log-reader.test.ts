@@ -54,6 +54,21 @@ describe('read-only audit log reader', () => {
 		expect(version(dbPath)).toBe(SCHEMA_VERSION);
 	});
 
+	test('reads exact maintenance status without writes or migrations', () => {
+		const writer = new AuditLogStore(dbPath);
+		appendStatus(writer);
+		const policy = { olderThanDays: 90 };
+		const now = new Date('2026-10-06T00:00:00.000Z');
+		const expected = writer.databaseStatus(policy, now);
+		writer.close();
+		const before = statSync(dbPath);
+		const reader = openAuditLogReader(dbPath);
+		expect(reader.databaseStatus(policy, now)).toEqual(expected);
+		expect(() => reader.databaseStatus({ olderThanDays: 0 })).toThrow();
+		reader.close();
+		expect(statSync(dbPath).mtimeMs).toBe(before.mtimeMs);
+	});
+
 	test('does not create a missing database', () => {
 		expect(() => openAuditLogReader(dbPath)).toThrow();
 		expect(existsSync(dbPath)).toBe(false);

@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 10;
+export const SCHEMA_VERSION = 11;
 
 export const SCHEMA = `
 CREATE TABLE IF NOT EXISTS audit_log (
@@ -73,6 +73,13 @@ CREATE INDEX IF NOT EXISTS audit_log_timestamp_idx
 
 CREATE INDEX IF NOT EXISTS audit_log_matched_rule_idx
   ON audit_log(matched_rule);
+
+CREATE INDEX IF NOT EXISTS audit_log_rule_counts_idx
+  ON audit_log(matched_rule, policy_scope, resolved_workspace_id, timestamp)
+  WHERE matched_rule IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS approval_requests_pending_audit_idx
+  ON approval_requests(audit_log_id) WHERE status = 'pending';
 
 CREATE INDEX IF NOT EXISTS audit_log_workspace_timestamp_idx
   ON audit_log(resolved_workspace_id, timestamp);
@@ -194,4 +201,5 @@ export const MIGRATIONS: Record<number, MigrationStatement[]> = {
 	8: [],
 	9: [],
 	10: [],
+	11: [],
 };

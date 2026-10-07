@@ -1,5 +1,6 @@
 import type { Manifest, StoredAuditEntry } from '../core/types.ts';
 import { openAuditLogReader, type AuditLogConnectionOptions, type AuditLogReader } from '../db/audit-log.ts';
+import type { AuditRetentionPolicy, DatabaseMaintenanceStatus } from '../db/maintenance-types.ts';
 import { computeAnalyticsSnapshot } from './snapshot.ts';
 import type {
 	AnalyticsSnapshot,
@@ -19,6 +20,8 @@ export interface AnalyticsReader {
 	snapshot(query?: AnalyticsSnapshotQuery): AnalyticsSnapshot;
 	listCalls(filter: AuditFilter, query: CursorCallQuery): CursorCallPage;
 	getCall(id: number): StoredAuditEntry | undefined;
+	/** Exact aggregates; run in a worker for large databases. */
+	databaseStatus(policy?: AuditRetentionPolicy): DatabaseMaintenanceStatus;
 	/**
 	 * Opaque cache token. Compare only successive values from this reader
 	 * instance; reopening starts a new token lifetime.
@@ -46,6 +49,10 @@ class DefaultAnalyticsReader implements AnalyticsReader {
 
 	getCall(id: number): StoredAuditEntry | undefined {
 		return this.auditLog.getEntry(id);
+	}
+
+	databaseStatus(policy?: AuditRetentionPolicy): DatabaseMaintenanceStatus {
+		return this.auditLog.databaseStatus(policy);
 	}
 
 	revision(): string {

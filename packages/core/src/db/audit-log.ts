@@ -396,8 +396,12 @@ export class AuditLogReader {
 	private localMutationVersion = 0;
 	private trigramSearchAvailable = false;
 
-	protected constructor(database: Database) {
+	protected readonly databasePath: string;
+	protected maintenanceState: DatabaseMaintenanceState = 'idle';
+
+	protected constructor(database: Database, databasePath = database.filename) {
 		this.database = database;
+		this.databasePath = resolve(databasePath);
 	}
 
 	close(): void {
@@ -440,6 +444,84 @@ export class AuditLogReader {
 				return result;
 			})
 			.deferred();
+	}
+
+	protected fileSizes(): DatabaseFileSizes {
+		return {
+			mainBytes: fileSize(this.databasePath),
+			walBytes: fileSize(`${this.databasePath}-wal`),
+			shmBytes: fileSize(`${this.databasePath}-shm`),
+		};
+	}
+
+	protected cutoffFor(policy: Required<AuditRetentionPolicy>, now: Date): string {
+		return new Date(now.getTime() - policy.olderThanDays * 24 * 60 * 60 * 1000).toISOString();
+	}
+
+	databaseStatus(policy?: AuditRetentionPolicy, now = new Date()): DatabaseMaintenanceStatus {
+		const validated = policy ? validateRetentionPolicy(policy) : undefined;
+		const cutoff = validated ? this.cutoffFor(validated, now) : null;
+		return this.withSnapshot(() => {
+			const totals = this.database
+				.query(`SELECT (SELECT COUNT(*) FROM audit_log) AS count,
+                  (SELECT MIN(timestamp) FROM audit_log) AS oldest,
+                  (SELECT MAX(timestamp) FROM audit_log) AS newest`)
+				.get() as { count: number; oldest: string | null; newest: string | null };
+			const approvals = approvalCounts(
+				this.database.query('SELECT status, COUNT(*) AS count FROM approval_requests GROUP BY status').all() as Array<{
+					status: string;
+					count: number;
+				}>
+			);
+			const eligible = cutoff
+				? (
+						this.database
+							.query(
+								`SELECT COUNT(*) AS count FROM audit_log al
+                 WHERE al.timestamp < ? AND NOT EXISTS (
+                   SELECT 1 FROM approval_requests ar
+                   WHERE ar.audit_log_id = al.id AND ar.status = 'pending'
+                 )`
+							)
+							.get(cutoff) as { count: number }
+					).count
+				: null;
+			const journal = this.database.query('PRAGMA journal_mode').get() as { journal_mode: string };
+			const pageSize = this.database.query('PRAGMA page_size').get() as { page_size: number };
+			const freeList = this.database.query('PRAGMA freelist_count').get() as {
+				freelist_count: number;
+			};
+			const state = this.database.query('SELECT revision FROM audit_maintenance_state WHERE id = 1').get() as {
+				revision: number;
+			};
+			const lastMaintenance = this.database
+				.query('SELECT MAX(completed_at) AS completed_at FROM audit_maintenance_history')
+				.get() as { completed_at: string | null };
+			const estimatedReusableBytes = Number(pageSize.page_size) * Number(freeList.freelist_count);
+			const files = this.fileSizes();
+			const compactionRecommended = Number(freeList.freelist_count) > 0 || files.walBytes > 16 * 1024 * 1024;
+			return {
+				databasePath: safeDatabasePath(this.databasePath),
+				files,
+				auditRows: Number(totals.count),
+				oldestAuditTimestamp: totals.oldest,
+				newestAuditTimestamp: totals.newest,
+				approvals,
+				proposedCutoff: cutoff,
+				eligibleAuditRows: eligible === null ? null : Number(eligible),
+				journalMode: String(journal.journal_mode).toLowerCase(),
+				maintenanceState: this.maintenanceState,
+				maintenanceRevision: Number(state.revision),
+				lastMaintenanceAt: lastMaintenance.completed_at,
+				pageSizeBytes: Number(pageSize.page_size),
+				freeListPages: Number(freeList.freelist_count),
+				estimatedReusableBytes,
+				compactionRecommended,
+				compactionReason: compactionRecommended
+					? 'SQLite reports reusable pages or a sizable WAL; exact reclaimed bytes are only known after compaction.'
+					: 'SQLite reports no reusable pages and the WAL is not sizable.',
+			};
+		});
 	}
 
 	listRecent(limit?: number): StoredAuditEntry[] {
@@ -945,7 +1027,7 @@ class ReadOnlyAuditLogReader extends AuditLogReader {
 	constructor(databasePath: string, options: AuditLogConnectionOptions) {
 		const busyTimeout = validatedBusyTimeout(options.busyTimeoutMs);
 		const database = new Database(databasePath, { readonly: true });
-		super(database);
+		super(database, databasePath);
 
 		try {
 			database.exec('PRAGMA query_only = ON');
@@ -978,14 +1060,10 @@ export function openAuditLogReader(databasePath: string, options: AuditLogConnec
 }
 
 export class AuditLogStore extends AuditLogReader {
-	private readonly databasePath: string;
-	private maintenanceState: DatabaseMaintenanceState = 'idle';
-
 	constructor(databasePath: string, options: AuditLogStoreOptions = {}) {
 		const busyTimeout = validatedBusyTimeout(options.busyTimeoutMs);
 		const database = new Database(databasePath, { create: true, readwrite: true });
-		super(database);
-		this.databasePath = resolve(databasePath);
+		super(database, databasePath);
 
 		try {
 			database.exec(`PRAGMA busy_timeout = ${busyTimeout}`);
@@ -1095,14 +1173,6 @@ export class AuditLogStore extends AuditLogReader {
 		for (const row of rows) update.run(normalizeSearchText(row.command), row.id);
 	}
 
-	private fileSizes(): DatabaseFileSizes {
-		return {
-			mainBytes: fileSize(this.databasePath),
-			walBytes: fileSize(`${this.databasePath}-wal`),
-			shmBytes: fileSize(`${this.databasePath}-shm`),
-		};
-	}
-
 	private maintenanceRevision(): number {
 		const row = this.database.query('SELECT revision FROM audit_maintenance_state WHERE id = 1').get() as {
 			revision: number;
@@ -1145,74 +1215,6 @@ export class AuditLogStore extends AuditLogReader {
 			cursor = Number(rows.at(-1)?.id ?? cursor);
 		}
 		return hash.digest('hex');
-	}
-
-	private cutoffFor(policy: Required<AuditRetentionPolicy>, now: Date): string {
-		return new Date(now.getTime() - policy.olderThanDays * 24 * 60 * 60 * 1000).toISOString();
-	}
-
-	databaseStatus(policy?: AuditRetentionPolicy, now = new Date()): DatabaseMaintenanceStatus {
-		const validated = policy ? validateRetentionPolicy(policy) : undefined;
-		const cutoff = validated ? this.cutoffFor(validated, now) : null;
-		return this.withSnapshot(() => {
-			const totals = this.database
-				.query('SELECT COUNT(*) AS count, MIN(timestamp) AS oldest, MAX(timestamp) AS newest FROM audit_log')
-				.get() as { count: number; oldest: string | null; newest: string | null };
-			const approvals = approvalCounts(
-				this.database.query('SELECT status, COUNT(*) AS count FROM approval_requests GROUP BY status').all() as Array<{
-					status: string;
-					count: number;
-				}>
-			);
-			const eligible = cutoff
-				? (
-						this.database
-							.query(
-								`SELECT COUNT(*) AS count FROM audit_log al
-                 WHERE al.timestamp < ? AND NOT EXISTS (
-                   SELECT 1 FROM approval_requests ar
-                   WHERE ar.audit_log_id = al.id AND ar.status = 'pending'
-                 )`
-							)
-							.get(cutoff) as { count: number }
-					).count
-				: null;
-			const journal = this.database.query('PRAGMA journal_mode').get() as { journal_mode: string };
-			const pageSize = this.database.query('PRAGMA page_size').get() as { page_size: number };
-			const freeList = this.database.query('PRAGMA freelist_count').get() as {
-				freelist_count: number;
-			};
-			const state = this.database.query('SELECT revision FROM audit_maintenance_state WHERE id = 1').get() as {
-				revision: number;
-			};
-			const lastMaintenance = this.database
-				.query('SELECT MAX(completed_at) AS completed_at FROM audit_maintenance_history')
-				.get() as { completed_at: string | null };
-			const estimatedReusableBytes = Number(pageSize.page_size) * Number(freeList.freelist_count);
-			const files = this.fileSizes();
-			const compactionRecommended = Number(freeList.freelist_count) > 0 || files.walBytes > 16 * 1024 * 1024;
-			return {
-				databasePath: safeDatabasePath(this.databasePath),
-				files,
-				auditRows: Number(totals.count),
-				oldestAuditTimestamp: totals.oldest,
-				newestAuditTimestamp: totals.newest,
-				approvals,
-				proposedCutoff: cutoff,
-				eligibleAuditRows: eligible === null ? null : Number(eligible),
-				journalMode: String(journal.journal_mode).toLowerCase(),
-				maintenanceState: this.maintenanceState,
-				maintenanceRevision: Number(state.revision),
-				lastMaintenanceAt: lastMaintenance.completed_at,
-				pageSizeBytes: Number(pageSize.page_size),
-				freeListPages: Number(freeList.freelist_count),
-				estimatedReusableBytes,
-				compactionRecommended,
-				compactionReason: compactionRecommended
-					? 'SQLite reports reusable pages or a sizable WAL; exact reclaimed bytes are only known after compaction.'
-					: 'SQLite reports no reusable pages and the WAL is not sizable.',
-			};
-		});
 	}
 
 	previewCleanup(policy: AuditRetentionPolicy, now = new Date()): AuditCleanupPreview {

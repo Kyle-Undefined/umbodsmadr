@@ -102,8 +102,8 @@ function unusedToolDetails(
 	const windowIsAllTime = query.since === undefined && query.until === undefined;
 	const allTime = windowIsAllTime ? usageRows : auditLog.aggregateToolUsage(allTimeFilter);
 	const recentSince = new Date(Date.now() - recentWindowDays * 86_400_000).toISOString();
-	const recentTools = new Set(auditLog.distinctTools({ ...allTimeFilter, since: recentSince }));
 	const everSeen = lastSeenByTool(allTime);
+	const recentTools = new Set([...everSeen].filter(([, seen]) => seen >= recentSince).map(([tool]) => tool));
 	const adapterTools = supportedAdapterTools();
 	const knownTools = new Set([...adapterTools, ...everSeen.keys()]);
 	const ruleReferences = referencedRules(configuredRulePatterns(manifest, query.workspace), knownTools);
